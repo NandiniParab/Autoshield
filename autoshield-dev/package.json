@@ -1,15 +1,13 @@
 {
   "name": "autoshield-dev",
-  "displayName": "Autoshield-DevAgent",
-  "description": "--",
-  "version": "0.0.1",
+  "displayName": "AutoShield DevAgent",
+  "description": "Tri-layer security analysis: Static + RAG + LLM reasoning",
+  "version": "2.0.0",
   "engines": {
     "vscode": "^1.109.0"
   },
-  "categories": [
-    "Other"
-  ],
-  "activationEvents": [],
+  "categories": ["Other", "Linters"],
+  "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -26,14 +24,38 @@
         {
           "type": "webview",
           "id": "autoshield.view",
-          "name": "Security Scan"
+          "name": "Security Analysis"
         }
       ]
     },
     "commands": [
       {
         "command": "autoshield.scan",
-        "title": "AutoShield: Scan Project"
+        "title": "AutoShield: Full Scan (Static + RAG + LLM)"
+      },
+      {
+        "command": "autoshield.analyzeSelection",
+        "title": "AutoShield: Analyze Selected Code"
+      },
+      {
+        "command": "autoshield.clear",
+        "title": "AutoShield: Clear Results"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "autoshield.analyzeSelection",
+          "when": "editorHasSelection",
+          "group": "autoshield"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "autoshield.scan",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
       }
     ]
   },
