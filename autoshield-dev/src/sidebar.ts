@@ -15,26 +15,21 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this._getHtml();
 
     webviewView.webview.onDidReceiveMessage(async (msg) => {
-      console.log("📨 Extension received:", msg);
+      console.log("Extension received:", msg);
 
       switch (msg.type) {
         case 'runScan':
           vscode.commands.executeCommand('autoshield.scan');
           break;
-
         case 'clearResults':
           vscode.commands.executeCommand('autoshield.clear');
           break;
-
-        // Jump to the file + line where the issue was found
         case 'jumpToLine':
           vscode.commands.executeCommand('autoshield.jumpToLine', {
             filePath: msg.filePath,
             line: msg.line,
           });
           break;
-
-        // Ask the LLM to generate a fix for a finding
         case 'generateFix':
           vscode.commands.executeCommand('autoshield.generateFix', {
             codeSnippet: msg.codeSnippet,
@@ -43,8 +38,6 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
             findingIndex: msg.findingIndex,
           });
           break;
-
-        // Apply a previously generated fix to the file
         case 'applyFix':
           vscode.commands.executeCommand('autoshield.applyFix', {
             filePath: msg.filePath,
@@ -58,7 +51,6 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   postMessage(msg: any) {
-    console.log("📩 Sending to sidebar:", msg);
     this._view?.webview.postMessage(msg);
   }
 
@@ -67,329 +59,447 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
     <!DOCTYPE html>
     <html>
     <head>
+    <meta charset="UTF-8">
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+
+      :root {
+        --bg:         #1a1200;
+        --bg2:        #211700;
+        --bg3:        #2a1f00;
+        --border:     #3a2b00;
+        --border2:    #5a4300;
+        --amber:      #e8a000;
+        --amber-dim:  #9a6a00;
+        --amber-lo:   #4a3200;
+        --text:       #cc9000;
+        --text-dim:   #886000;
+        --text-lo:    #4a3500;
+        --red:        #cc3333;
+        --red-bg:     #280808;
+        --orange:     #cc7700;
+        --orange-bg:  #221200;
+        --yellow:     #b88800;
+        --yellow-bg:  #1e1600;
+        --green:      #4a8a3a;
+        --green-bg:   #0a1608;
+        --green-dim:  #203a18;
+        --blue:       #3a6a9a;
+        --font-mono:  'IBM Plex Mono', 'Cascadia Code', 'Courier New', monospace;
+        --font-sans:  'IBM Plex Sans', sans-serif;
+      }
+
       * { box-sizing: border-box; margin: 0; padding: 0; }
 
       body {
-        background: #0d1117;
-        color: #e6edf3;
-        font-family: 'Segoe UI', sans-serif;
-        font-size: 12px;
-        padding: 12px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        line-height: 1.5;
       }
 
-      h2 {
-        font-size: 14px;
+      /* ── Header ─────────────────────────────── */
+      .header {
+        padding: 9px 12px 7px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+      }
+
+      .logo {
+        font-size: 11px;
         font-weight: 600;
-        margin-bottom: 10px;
-        color: #58a6ff;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.18em;
+        color: var(--amber);
+        text-transform: uppercase;
       }
 
+      .logo-dim { color: var(--amber-dim); font-weight: 300; }
+
+      .version {
+        font-size: 9px;
+        color: var(--text-lo);
+        letter-spacing: 0.05em;
+      }
+
+      /* ── Toolbar ─────────────────────────────── */
       .toolbar {
-        display: flex;
-        gap: 6px;
-        margin-bottom: 12px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1px;
+        background: var(--border);
+        border-bottom: 1px solid var(--border);
       }
 
-      button {
-        background: #21262d;
-        color: #e6edf3;
-        border: 1px solid #30363d;
-        border-radius: 6px;
-        padding: 5px 10px;
+      .tbtn {
+        background: var(--bg2);
+        color: var(--text-dim);
+        border: none;
+        padding: 6px 0;
         cursor: pointer;
-        font-size: 11px;
-        flex: 1;
-        transition: background 0.15s;
-      }
-      button:hover { background: #30363d; }
-      button:disabled { opacity: 0.4; cursor: not-allowed; }
-
-      .btn-primary {
-        background: #1f6feb;
-        border-color: #1f6feb;
-        color: #fff;
-      }
-      .btn-primary:hover { background: #388bfd; }
-
-      .btn-fix {
-        background: #238636;
-        border-color: #2ea043;
-        color: #fff;
-        padding: 4px 8px;
-        font-size: 10px;
-        flex: none;
-      }
-      .btn-fix:hover { background: #2ea043; }
-
-      .btn-apply {
-        background: #9e6a03;
-        border-color: #d29922;
-        color: #fff;
-        padding: 4px 8px;
-        font-size: 10px;
-        flex: none;
-      }
-      .btn-apply:hover { background: #d29922; }
-
-      .btn-goto {
-        background: transparent;
-        border-color: #30363d;
-        color: #58a6ff;
-        padding: 4px 8px;
-        font-size: 10px;
-        flex: none;
-        text-decoration: underline;
-      }
-      .btn-goto:hover { background: #161b22; }
-
-      #status {
-        margin-bottom: 10px;
-        color: #8b949e;
-        font-size: 11px;
-        min-height: 16px;
+        font-family: var(--font-mono);
+        font-size: 9px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        font-weight: 500;
+        transition: background 0.1s, color 0.1s;
       }
 
-      .finding-card {
-        border: 1px solid #30363d;
-        margin-bottom: 10px;
-        border-radius: 8px;
-        background: #161b22;
-        overflow: hidden;
-      }
+      .tbtn:hover          { background: var(--bg3); color: var(--amber); }
+      .tbtn.primary        { color: var(--amber); }
+      .tbtn.primary:hover  { background: var(--amber-lo); }
 
-      .finding-header {
-        padding: 8px 10px;
+      /* ── Status ──────────────────────────────── */
+      .statusbar {
+        padding: 4px 12px;
+        font-size: 9px;
+        color: var(--text-lo);
+        letter-spacing: 0.06em;
+        border-bottom: 1px solid var(--border);
+        min-height: 21px;
         display: flex;
-        align-items: flex-start;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .statusbar.scanning { color: var(--amber-dim); }
+      .statusbar.done     { color: var(--text-dim); }
+      .statusbar.error    { color: var(--red); }
+
+      .dot {
+        width: 5px; height: 5px;
+        border-radius: 50%;
+        background: var(--amber);
+        flex-shrink: 0;
+        animation: blink 1s ease-in-out infinite;
+      }
+
+      @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
+
+      /* ── Summary ─────────────────────────────── */
+      .summary {
+        display: none;
+        gap: 1px;
+        background: var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .summary.visible { display: flex; }
+
+      .sum-cell {
+        flex: 1;
+        background: var(--bg2);
+        padding: 5px 3px;
+        text-align: center;
+      }
+
+      .sum-n    { font-size: 13px; font-weight: 600; display: block; line-height: 1; }
+      .sum-l    { font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-lo); margin-top: 2px; display: block; }
+
+      .n-crit   { color: #cc3333; }
+      .n-high   { color: #cc7700; }
+      .n-med    { color: var(--yellow); }
+      .n-low    { color: var(--green); }
+
+      /* ── Empty state ─────────────────────────── */
+      .empty {
+        padding: 32px 12px;
+        text-align: center;
+        color: var(--text-lo);
+        font-size: 9px;
+        letter-spacing: 0.08em;
+        line-height: 2;
+      }
+
+      /* ── Card ────────────────────────────────── */
+      .card { border-bottom: 1px solid var(--border); }
+
+      .card-head {
+        padding: 7px 10px 7px 12px;
+        display: grid;
+        grid-template-columns: auto 1fr auto;
         gap: 8px;
+        align-items: start;
         cursor: pointer;
         user-select: none;
+        transition: background 0.08s;
       }
-      .finding-header:hover { background: #1c2128; }
 
-      .severity-badge {
-        font-size: 9px;
-        font-weight: 700;
-        padding: 2px 6px;
-        border-radius: 4px;
-        text-transform: uppercase;
-        flex-shrink: 0;
-        margin-top: 1px;
-      }
-      .sev-CRITICAL { background: #6e1111; color: #ff7b72; border: 1px solid #ff7b72; }
-      .sev-HIGH     { background: #5a2d0c; color: #ffa657; border: 1px solid #ffa657; }
-      .sev-MEDIUM   { background: #3d3500; color: #e3b341; border: 1px solid #e3b341; }
-      .sev-LOW      { background: #0d2416; color: #3fb950; border: 1px solid #3fb950; }
-      .sev-INFO     { background: #0d1b30; color: #58a6ff; border: 1px solid #58a6ff; }
+      .card-head:hover { background: var(--bg2); }
 
-      .finding-title {
-        flex: 1;
+      .sev-tag {
+        font-size: 7px;
         font-weight: 600;
-        color: #e6edf3;
-        font-size: 11px;
+        letter-spacing: 0.1em;
+        padding: 2px 4px;
+        border: 1px solid;
+        text-transform: uppercase;
+        margin-top: 1px;
+        flex-shrink: 0;
+      }
+
+      .sev-CRITICAL { color:#cc3333; border-color:#cc3333; background:#280808; }
+      .sev-HIGH     { color:#cc7700; border-color:#cc7700; background:#221200; }
+      .sev-MEDIUM   { color:#b88800; border-color:#b88800; background:#1e1600; }
+      .sev-LOW      { color:#4a8a3a; border-color:#4a8a3a; background:#0a1608; }
+      .sev-INFO     { color:#3a6a9a; border-color:#3a6a9a; background:#080e18; }
+
+      .card-title {
+        font-size: 10px;
+        font-weight: 500;
+        color: var(--text);
         line-height: 1.4;
       }
 
-      .finding-meta {
-        padding: 0 10px 8px 10px;
-        color: #8b949e;
-        font-size: 10px;
-        line-height: 1.6;
+      .card-meta {
+        font-size: 9px;
+        color: var(--text-lo);
+        margin-top: 2px;
       }
 
-      .finding-meta .file-link {
-        color: #58a6ff;
+      .file-link {
+        color: var(--amber-dim);
         cursor: pointer;
-        text-decoration: underline;
-        word-break: break-all;
-      }
-      .finding-meta .file-link:hover { color: #79c0ff; }
-
-      .finding-body {
-        padding: 0 10px 10px 10px;
-        border-top: 1px solid #21262d;
-        display: none;
-      }
-      .finding-body.open { display: block; }
-
-      .section-label {
-        color: #8b949e;
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin: 8px 0 4px;
-        font-weight: 600;
+        text-decoration: none;
       }
 
-      .reasoning-text {
-        color: #c9d1d9;
-        font-size: 11px;
-        line-height: 1.5;
-        background: #0d1117;
-        border-radius: 4px;
-        padding: 6px 8px;
-        border: 1px solid #21262d;
-      }
+      .file-link:hover { color: var(--amber); text-decoration: underline; }
 
-      .fix-actions {
+      .score-row {
         display: flex;
-        gap: 6px;
-        margin-top: 8px;
         align-items: center;
-        flex-wrap: wrap;
+        gap: 5px;
+        margin-top: 4px;
       }
 
-      .fix-block {
-        margin-top: 8px;
-        background: #0d1117;
-        border: 1px solid #238636;
-        border-radius: 6px;
-        overflow: hidden;
+      .score-track {
+        flex: 1;
+        height: 2px;
+        background: var(--border);
       }
 
-      .fix-block-header {
-        background: #0f2a18;
-        padding: 4px 8px;
-        font-size: 10px;
-        color: #3fb950;
+      .score-fill { height: 100%; }
+
+      .score-num {
+        font-size: 8px;
+        color: var(--text-lo);
+        flex-shrink: 0;
+        width: 30px;
+        text-align: right;
+      }
+
+      .chevron {
+        font-size: 8px;
+        color: var(--text-lo);
+        transition: transform 0.15s;
+        padding-top: 2px;
+        font-family: var(--font-mono);
+      }
+
+      .chevron.open { transform: rotate(90deg); }
+
+      /* ── Card body ───────────────────────────── */
+      .card-body {
+        display: none;
+        background: var(--bg2);
+        border-top: 1px solid var(--border);
+      }
+
+      .card-body.open { display: block; }
+
+      .body-sec {
+        padding: 7px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .body-sec:last-child { border-bottom: none; }
+
+      .sec-label {
+        font-size: 8px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--amber-dim);
         font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      .body-text {
+        font-size: 10px;
+        color: var(--text-dim);
+        line-height: 1.55;
+        font-family: var(--font-sans);
+      }
+
+      .risks { list-style: none; }
+
+      .risks li {
+        font-size: 10px;
+        color: var(--text-dim);
+        padding: 1px 0 1px 12px;
+        position: relative;
+        font-family: var(--font-sans);
+      }
+
+      .risks li::before {
+        content: '>';
+        position: absolute;
+        left: 0;
+        color: var(--amber-dim);
+        font-family: var(--font-mono);
+      }
+
+      /* ── Action row ──────────────────────────── */
+      .act-row {
+        display: flex;
+        gap: 1px;
+        background: var(--border);
+      }
+
+      .abtn {
+        flex: 1;
+        background: var(--bg2);
+        color: var(--text-dim);
+        border: none;
+        padding: 6px 2px;
+        cursor: pointer;
+        font-family: var(--font-mono);
+        font-size: 8px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        font-weight: 500;
+        transition: background 0.08s, color 0.08s;
+      }
+
+      .abtn:disabled          { opacity: 0.3; cursor: not-allowed; }
+      .abtn:hover             { background: var(--bg3); color: var(--amber); }
+      .abtn.goto              { color: var(--amber-dim); }
+      .abtn.goto:hover        { background: var(--amber-lo); color: var(--amber); }
+      .abtn.fix               { color: var(--green); }
+      .abtn.fix:hover         { background: var(--green-dim); color: #7acc6a; }
+      .abtn.apply             { color: var(--yellow); }
+      .abtn.apply:hover       { background: var(--yellow-bg); color: var(--amber); }
+
+      /* ── Fix block ───────────────────────────── */
+      .fix-wrap { border-top: 1px solid var(--green-dim); }
+
+      .fix-head {
+        padding: 4px 12px;
+        font-size: 8px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #5aaa4a;
+        background: var(--green-dim);
         display: flex;
         justify-content: space-between;
         align-items: center;
       }
 
       .fix-code {
-        padding: 8px;
-        font-family: 'Cascadia Code', 'Consolas', monospace;
-        font-size: 10px;
-        color: #c9d1d9;
+        padding: 8px 12px;
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        color: #a8cc98;
         white-space: pre-wrap;
         word-break: break-all;
-        max-height: 140px;
+        max-height: 150px;
         overflow-y: auto;
-      }
-
-      .fix-explanation {
-        padding: 6px 8px;
-        font-size: 10px;
-        color: #8b949e;
-        border-top: 1px solid #21262d;
+        background: #080e06;
         line-height: 1.5;
       }
 
-      .spinner {
+      .fix-desc {
+        padding: 5px 12px;
+        font-size: 10px;
+        color: var(--text-lo);
+        font-family: var(--font-sans);
+        border-top: 1px solid var(--border);
+        line-height: 1.5;
+      }
+
+      /* ── Spinner ─────────────────────────────── */
+      .spin {
         display: inline-block;
-        width: 10px;
-        height: 10px;
-        border: 2px solid #30363d;
-        border-top-color: #58a6ff;
+        width: 7px; height: 7px;
+        border: 1px solid var(--border2);
+        border-top-color: var(--amber);
         border-radius: 50%;
-        animation: spin 0.7s linear infinite;
-        margin-right: 5px;
+        animation: rot 0.6s linear infinite;
         vertical-align: middle;
-      }
-      @keyframes spin { to { transform: rotate(360deg); } }
-
-      .score-row {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        margin-top: 4px;
+        margin-right: 3px;
       }
 
-      .score-bar-bg {
-        flex: 1;
-        height: 4px;
-        background: #21262d;
-        border-radius: 2px;
-        overflow: hidden;
-      }
+      @keyframes rot { to { transform: rotate(360deg); } }
 
-      .score-bar-fill {
-        height: 100%;
-        border-radius: 2px;
-        transition: width 0.4s ease;
-      }
-
-      .risks-list {
-        list-style: none;
-        margin-top: 4px;
-      }
-      .risks-list li {
-        color: #c9d1d9;
-        font-size: 10px;
-        line-height: 1.5;
-        padding-left: 12px;
-        position: relative;
-      }
-      .risks-list li::before {
-        content: '›';
-        position: absolute;
-        left: 2px;
-        color: #ffa657;
-      }
-
-      .chevron {
-        font-size: 10px;
-        color: #8b949e;
-        transition: transform 0.2s;
-        flex-shrink: 0;
-      }
-      .chevron.open { transform: rotate(90deg); }
+      ::-webkit-scrollbar       { width: 3px; }
+      ::-webkit-scrollbar-track { background: var(--bg); }
+      ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
     </style>
     </head>
     <body>
 
-      <h2>🛡 AutoShield</h2>
-
-      <div class="toolbar">
-        <button class="btn-primary" onclick="runScan()">⚡ Scan</button>
-        <button onclick="clearUI()">🧹 Clear</button>
+      <div class="header">
+        <div class="logo">Auto<span class="logo-dim">Shield</span></div>
+        <div class="version">v1.0.0</div>
       </div>
 
-      <div id="status"></div>
+      <div class="toolbar">
+        <button class="tbtn primary" onclick="runScan()">[S]  Scan</button>
+        <button class="tbtn" onclick="clearUI()">[C]  Clear</button>
+      </div>
+
+      <div id="sb" class="statusbar">Ready</div>
+
+      <div id="summary" class="summary">
+        <div class="sum-cell"><span class="sum-n n-crit" id="s-crit">0</span><span class="sum-l">Crit</span></div>
+        <div class="sum-cell"><span class="sum-n n-high" id="s-high">0</span><span class="sum-l">High</span></div>
+        <div class="sum-cell"><span class="sum-n n-med"  id="s-med">0</span><span class="sum-l">Med</span></div>
+        <div class="sum-cell"><span class="sum-n n-low"  id="s-low">0</span><span class="sum-l">Low</span></div>
+      </div>
+
       <div id="out"></div>
 
       <script>
         const vscode = acquireVsCodeApi();
-
-        // Stores the current results so fix buttons can reference them
         let currentResults = [];
 
         function runScan() {
-          document.getElementById('status').innerText = "Running scan...";
+          setStatus('Scanning workspace...', 'scanning', true);
           vscode.postMessage({ type: 'runScan' });
         }
 
         function clearUI() {
           document.getElementById('out').innerHTML = '';
-          document.getElementById('status').innerText = '';
+          document.getElementById('summary').classList.remove('visible');
+          setStatus('Ready', '');
           currentResults = [];
         }
 
-        // ── Jump to file/line ───────────────────────────────────────────
-        function jumpToLine(filePath, line) {
-          vscode.postMessage({ type: 'jumpToLine', filePath, line });
+        function setStatus(text, cls, pulse) {
+          const el = document.getElementById('sb');
+          el.className = 'statusbar' + (cls ? ' ' + cls : '');
+          el.innerHTML = (pulse ? '<span class="dot"></span>' : '') + text;
         }
 
-        // ── Request LLM fix ─────────────────────────────────────────────
-        function generateFix(index) {
-          const r = currentResults[index];
+        function jumpToLine(fp, line) {
+          vscode.postMessage({ type: 'jumpToLine', filePath: fp, line });
+        }
+
+        function generateFix(i) {
+          const r = currentResults[i];
           if (!r) return;
           vscode.postMessage({
             type: 'generateFix',
-            findingIndex: index,
+            findingIndex: i,
             codeSnippet: r.code_snippet || r.message || '',
             vulnType: r.vuln_type || '',
             cweId: r.cwe_id || 'CWE-Unknown',
           });
         }
 
-        // ── Apply fix to file ───────────────────────────────────────────
-        function applyFix(index) {
-          const r = currentResults[index];
+        function applyFix(i) {
+          const r = currentResults[i];
           if (!r || !r._fixCode) return;
           vscode.postMessage({
             type: 'applyFix',
@@ -400,201 +510,161 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
           });
         }
 
-        // ── Toggle expand/collapse ──────────────────────────────────────
-        function toggleCard(index) {
-          const body = document.getElementById('body-' + index);
-          const chev = document.getElementById('chev-' + index);
+        function toggle(i) {
+          const body = document.getElementById('b-' + i);
+          const chev = document.getElementById('c-' + i);
           if (!body) return;
-          const isOpen = body.classList.toggle('open');
-          chev.classList.toggle('open', isOpen);
+          const open = body.classList.toggle('open');
+          chev.classList.toggle('open', open);
         }
 
-        // ── Severity → bar color ────────────────────────────────────────
-        function scoreColor(score) {
-          if (score >= 85) return '#ff7b72';
-          if (score >= 65) return '#ffa657';
-          if (score >= 40) return '#e3b341';
-          return '#3fb950';
+        function scoreColor(s) {
+          if (s >= 85) return '#cc3333';
+          if (s >= 65) return '#cc7700';
+          if (s >= 40) return '#b88800';
+          return '#4a8a3a';
         }
 
-        // ── Render all findings ─────────────────────────────────────────
-        function renderResults(results) {
-          const out = document.getElementById('out');
-          out.innerHTML = '';
-
-          if (!results || results.length === 0) {
-            out.innerHTML = '<p style="color:#8b949e;margin-top:8px;">✅ No issues found</p>';
-            return;
-          }
-
-          results.forEach((r, i) => {
-            const cat = (r.risk_category || 'MEDIUM').toUpperCase();
-            const score = r.risk_score || 0;
-            const fileName = (r.file_path || 'unknown').split(/[\\/]/).pop();
-            const hasExistingFix = !!(r.fix_code || r.recommended_fix);
-            const keyRisks = r.key_risks || [];
-            const reasoning = r.reasoning || '';
-
-            const card = document.createElement('div');
-            card.className = 'finding-card';
-            card.id = 'card-' + i;
-
-            card.innerHTML = \`
-              <div class="finding-header" onclick="toggleCard(\${i})">
-                <span class="severity-badge sev-\${cat}">\${cat}</span>
-                <span class="finding-title">\${r.vuln_type || r.cwe_id || 'Unknown Issue'}</span>
-                <span class="chevron" id="chev-\${i}">›</span>
-              </div>
-
-              <div class="finding-meta">
-                <span class="file-link" onclick="jumpToLine('\${r.file_path}', \${r.line || 1})" title="\${r.file_path}">
-                  📄 \${fileName}
-                </span>
-                &nbsp;·&nbsp; Line \${r.line || 0}
-                &nbsp;·&nbsp; Score \${score}/100
-                <div class="score-row">
-                  <div class="score-bar-bg">
-                    <div class="score-bar-fill" style="width:\${score}%;background:\${scoreColor(score)}"></div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="finding-body" id="body-\${i}">
-                \${reasoning ? \`
-                  <div class="section-label">🧠 LLM Reasoning</div>
-                  <div class="reasoning-text">\${reasoning}</div>
-                \` : ''}
-
-                \${keyRisks.length > 0 ? \`
-                  <div class="section-label">⚠ Key Risks</div>
-                  <ul class="risks-list">
-                    \${keyRisks.map(k => \`<li>\${k}</li>\`).join('')}
-                  </ul>
-                \` : ''}
-
-                <div class="fix-actions">
-                  <button class="btn-goto" onclick="jumpToLine('\${r.file_path}', \${r.line || 1})">
-                    📍 Go to Line \${r.line || 1}
-                  </button>
-                  <button class="btn-fix" id="fix-btn-\${i}" onclick="generateFix(\${i})">
-                    🔧 Get Fix
-                  </button>
-                </div>
-
-                \${hasExistingFix ? renderFixBlock(i, r.fix_code || '', r.recommended_fix || '') : ''}
-
-                <div id="fix-area-\${i}"></div>
-              </div>
-            \`;
-
-            out.appendChild(card);
-          });
-        }
-
-        function renderFixBlock(index, fixCode, explanation) {
-          if (!fixCode && !explanation) return '';
-          return \`
-            <div class="fix-block" id="fix-block-\${index}">
-              <div class="fix-block-header">
-                ✅ Suggested Fix
-                \${fixCode ? \`<button class="btn-apply" onclick="applyFix(\${index})">⚡ Apply Fix</button>\` : ''}
-              </div>
-              \${fixCode ? \`<div class="fix-code">\${escapeHtml(fixCode)}</div>\` : ''}
-              \${explanation ? \`<div class="fix-explanation">\${explanation}</div>\` : ''}
-            </div>
-          \`;
-        }
-
-        function escapeHtml(s) {
+        function esc(s) {
           return String(s)
             .replace(/&/g,'&amp;')
             .replace(/</g,'&lt;')
             .replace(/>/g,'&gt;');
         }
 
-        // ── Message handler ─────────────────────────────────────────────
-        window.addEventListener('message', event => {
-          const msg = event.data;
-          const out = document.getElementById('out');
-          const status = document.getElementById('status');
+        function fixBlock(i, code, desc) {
+          if (!code && !desc) return '';
+          return \`<div class="fix-wrap" id="fix-wrap-\${i}">
+            <div class="fix-head">
+              Fix ready
+              \${code ? \`<button class="abtn apply" style="flex:none;padding:2px 8px" onclick="applyFix(\${i})">Apply</button>\` : ''}
+            </div>
+            \${code ? \`<div class="fix-code">\${esc(code)}</div>\` : ''}
+            \${desc  ? \`<div class="fix-desc">\${esc(desc)}</div>\` : ''}
+          </div>\`;
+        }
 
-          // Scan started
+        function updateSummary(results) {
+          const c = {CRITICAL:0, HIGH:0, MEDIUM:0, LOW:0};
+          results.forEach(r => {
+            const k = (r.risk_category||'MEDIUM').toUpperCase();
+            if (c[k] !== undefined) c[k]++;
+          });
+          document.getElementById('s-crit').innerText = c.CRITICAL;
+          document.getElementById('s-high').innerText = c.HIGH;
+          document.getElementById('s-med').innerText  = c.MEDIUM;
+          document.getElementById('s-low').innerText  = c.LOW;
+          document.getElementById('summary').classList.add('visible');
+        }
+
+        function render(results) {
+          const out = document.getElementById('out');
+          out.innerHTML = '';
+
+          if (!results || results.length === 0) {
+            out.innerHTML = '<div class="empty">// No issues detected</div>';
+            return;
+          }
+
+          updateSummary(results);
+
+          results.forEach((r, i) => {
+            const cat   = (r.risk_category || 'MEDIUM').toUpperCase();
+            const score = r.risk_score || 0;
+            const fp    = r.file_path || 'unknown';
+            const fn    = fp.split(/[\\/]/).pop();
+            const cwe   = r.cwe_id ? ' [' + r.cwe_id + ']' : '';
+            const hasF  = !!(r.fix_code || r.recommended_fix);
+            const risks = r.key_risks || [];
+            const rsn   = r.reasoning || '';
+
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.innerHTML = \`
+              <div class="card-head" onclick="toggle(\${i})">
+                <span class="sev-tag sev-\${cat}">\${cat}</span>
+                <div>
+                  <div class="card-title">\${esc(r.vuln_type || r.cwe_id || 'Unknown Issue')}\${cwe}</div>
+                  <div class="card-meta">
+                    <span class="file-link" onclick="event.stopPropagation();jumpToLine('\${fp}',\${r.line||1})">\${fn}</span>
+                    &nbsp;:&nbsp;\${r.line||0}&nbsp;&nbsp;\${r.tool ? '[ '+r.tool+' ]' : ''}
+                  </div>
+                  <div class="score-row">
+                    <div class="score-track">
+                      <div class="score-fill" style="width:\${score}%;background:\${scoreColor(score)}"></div>
+                    </div>
+                    <span class="score-num">\${score}/100</span>
+                  </div>
+                </div>
+                <span class="chevron" id="c-\${i}">&gt;</span>
+              </div>
+
+              <div class="card-body" id="b-\${i}">
+                \${rsn ? \`<div class="body-sec"><div class="sec-label">LLM Reasoning</div><div class="body-text">\${esc(rsn)}</div></div>\` : ''}
+                \${risks.length ? \`<div class="body-sec"><div class="sec-label">Key Risks</div><ul class="risks">\${risks.map(k=>\`<li>\${esc(k)}</li>\`).join('')}</ul></div>\` : ''}
+                <div class="act-row">
+                  <button class="abtn goto" onclick="jumpToLine('\${fp}',\${r.line||1})">Go to line \${r.line||1}</button>
+                  <button class="abtn fix" id="fb-\${i}" onclick="generateFix(\${i})">Get Fix</button>
+                </div>
+                \${hasF ? fixBlock(i, r.fix_code||'', r.recommended_fix||'') : ''}
+                <div id="fa-\${i}"></div>
+              </div>
+            \`;
+            out.appendChild(card);
+          });
+        }
+
+        window.addEventListener('message', ev => {
+          const msg = ev.data;
+
           if (msg.type === 'scanStarted') {
-            status.innerText = "🔍 Scanning...";
-            out.innerHTML = '';
+            setStatus('Scanning workspace...', 'scanning', true);
+            document.getElementById('out').innerHTML = '';
+            document.getElementById('summary').classList.remove('visible');
             currentResults = [];
           }
 
-          // Scan results
           if (msg.type === 'scanResults') {
-            status.innerText = "✅ Scan complete — " + msg.count + " finding(s)";
             currentResults = msg.results || [];
-            renderResults(currentResults);
+            const n = msg.count || 0;
+            setStatus('Scan complete  —  ' + n + ' finding' + (n!==1?'s':''), 'done');
+            render(currentResults);
           }
 
-          // Clear
-          if (msg.type === 'clear') {
-            clearUI();
-          }
+          if (msg.type === 'clear') { clearUI(); }
 
-          // Error
           if (msg.type === 'scanError') {
-            status.innerHTML = '<span style="color:#ff7b72">❌ ' + msg.error + '</span>';
+            setStatus('Error: ' + msg.error, 'error');
           }
 
-          // Fix is being generated (spinner on button)
           if (msg.type === 'fixGenerating') {
-            const btn = document.getElementById('fix-btn-' + msg.findingIndex);
-            if (btn) {
-              btn.disabled = true;
-              btn.innerHTML = '<span class="spinner"></span>Generating...';
-            }
+            const btn = document.getElementById('fb-' + msg.findingIndex);
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Generating'; }
           }
 
-          // Fix ready
           if (msg.type === 'fixGenerated') {
             const i = msg.findingIndex;
-            const fixData = msg.fixData || {};
-            const btn = document.getElementById('fix-btn-' + i);
-            if (btn) {
-              btn.disabled = false;
-              btn.innerText = '🔄 Regenerate Fix';
-            }
-
-            // Store fix on the result so Apply Fix can use it
-            if (currentResults[i]) {
-              currentResults[i]._fixCode = fixData.fix_code || '';
-            }
-
-            // Render fix block in the expanded area
-            const area = document.getElementById('fix-area-' + i);
-            if (area) {
-              area.innerHTML = renderFixBlock(i, fixData.fix_code || '', fixData.explanation || '');
-            }
-
-            // Auto-open the card body if not already open
-            const body = document.getElementById('body-' + i);
-            const chev = document.getElementById('chev-' + i);
+            const d = msg.fixData || {};
+            const btn = document.getElementById('fb-' + i);
+            if (btn) { btn.disabled = false; btn.innerText = 'Regenerate'; }
+            if (currentResults[i]) currentResults[i]._fixCode = d.fix_code || '';
+            const area = document.getElementById('fa-' + i);
+            if (area) area.innerHTML = fixBlock(i, d.fix_code||'', d.explanation||'');
+            const body = document.getElementById('b-' + i);
+            const chev = document.getElementById('c-' + i);
             if (body && !body.classList.contains('open')) {
               body.classList.add('open');
               if (chev) chev.classList.add('open');
             }
           }
 
-          // Fix generation error
           if (msg.type === 'fixError') {
             const i = msg.findingIndex;
-            const btn = document.getElementById('fix-btn-' + i);
-            if (btn) {
-              btn.disabled = false;
-              btn.innerText = '🔧 Retry Fix';
-            }
-            const area = document.getElementById('fix-area-' + i);
-            if (area) {
-              area.innerHTML = '<div style="color:#ff7b72;font-size:10px;margin-top:6px;">❌ ' + msg.error + '</div>';
-            }
+            const btn = document.getElementById('fb-' + i);
+            if (btn) { btn.disabled = false; btn.innerText = 'Retry'; }
+            const area = document.getElementById('fa-' + i);
+            if (area) area.innerHTML = '<div style="padding:5px 12px;font-size:9px;color:#cc3333;letter-spacing:0.04em">Error: ' + esc(msg.error) + '</div>';
           }
-
         });
       </script>
     </body>
