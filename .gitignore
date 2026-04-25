@@ -1,0 +1,55 @@
+# 🔒 Environment variables
+.env
+.env.*
+
+# 🐍 Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# 📦 Virtual Environment
+venv/
+env/
+ENV/
+
+# 🧪 Testing & coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# 🧾 Logs
+*.log
+
+# 🧠 ChromaDB (vector DB)
+chroma_db/
+
+# 📊 Data files (optional - depends on your project)
+*.csv
+*.json
+*.parquet
+
+# 🧹 OS files
+.DS_Store
+Thumbs.db
+
+# 🧰 IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 📦 Build / dist
+build/
+dist/
+*.egg-info/
+
+# 🔐 Secrets
+*.pem
+*.key
+
+# 🐳 Docker (if you add later)
+*.env.docker
+docker-compose.override.yml
