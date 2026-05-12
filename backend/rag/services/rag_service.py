@@ -36,6 +36,24 @@ OWASP_CATEGORIES = {
     "A10": "Server-Side Request Forgery",
 }
 
+CWE_OWASP_FALLBACKS = {
+    "CWE-89": {
+        "owasp_category": "Injection",
+        "cwe_text": "CWE-89 covers improper neutralization of special elements used in SQL commands. User input must not be concatenated into SQL query text.",
+        "owasp_text": "OWASP A03 Injection includes SQL injection. The standard mitigation is parameterized queries, prepared statements, and strict server-side input handling.",
+    },
+    "CWE-798": {
+        "owasp_category": "Identification and Authentication Failures",
+        "cwe_text": "CWE-798 covers hardcoded credentials. Secrets embedded in source code can be recovered from repositories, builds, logs, or deployed bundles.",
+        "owasp_text": "OWASP A07 includes authentication weaknesses. Secrets should be stored outside code in environment-specific secret management and rotated after exposure.",
+    },
+    "CWE-327": {
+        "owasp_category": "Cryptographic Failures",
+        "cwe_text": "CWE-327 covers use of a broken or risky cryptographic algorithm. MD5 and SHA1 are not suitable for security-sensitive hashing.",
+        "owasp_text": "OWASP A02 Cryptographic Failures includes weak cryptography. Use modern algorithms such as SHA-256/SHA-512, or password hashing algorithms like Argon2, bcrypt, or scrypt.",
+    },
+}
+
 
 def extract_owasp_category(results: List[Dict]) -> str:
     for r in results:
@@ -75,6 +93,29 @@ def compute_confidence(results: List[Dict]) -> float:
     return round(min(0.99, avg), 2)
 
 
+def fallback_rag_result(cwe_id: str, severity: str) -> Dict:
+    fallback = CWE_OWASP_FALLBACKS.get(cwe_id)
+    if not fallback:
+        return {
+            "owasp_category": "Unknown",
+            "related_cves": [],
+            "exploitability": SEVERITY_EXPLOITABILITY.get(severity, "medium"),
+            "confidence": 0.0,
+            "context_chunks": [],
+        }
+
+    return {
+        "owasp_category": fallback["owasp_category"],
+        "related_cves": [],
+        "exploitability": SEVERITY_EXPLOITABILITY.get(severity, "medium"),
+        "confidence": 0.82,
+        "context_chunks": [
+            {"text": fallback["cwe_text"], "source": "CWE", "similarity": 0.82},
+            {"text": fallback["owasp_text"], "source": "OWASP", "similarity": 0.8},
+        ],
+    }
+
+
 def analyze_vulnerability(
     code_snippet: str,
     cwe_id: str,
@@ -99,25 +140,26 @@ def analyze_vulnerability(
     severity = normalize_severity(severity)
 
     # ── Path B: RAG Retrieval ─────────────────────────────────────────
-    rag_raw = retrieve_context(
-        code_snippet=code_snippet,
-        cwe_id=cwe_id,
-        severity=severity,
-        vuln_type=vuln_type,
-        top_k=config.TOP_K_RESULTS,
-    )
+    try:
+        rag_raw = retrieve_context(
+            code_snippet=code_snippet,
+            cwe_id=cwe_id,
+            severity=severity,
+            vuln_type=vuln_type,
+            top_k=config.TOP_K_RESULTS,
+        )
+    except Exception as e:
+        print(f"[RAGService] Retrieval fallback for {cwe_id}: {e}")
+        rag_raw = []
+        rag_result = fallback_rag_result(cwe_id, severity)
 
     if not rag_raw:
         # No RAG results — build minimal response
         from rag.services.llm_service import _fallback_response
-        llm_result = _fallback_response(severity, "No RAG context available")
-        rag_result = {
-            "owasp_category": "Unknown",
-            "related_cves": [],
-            "exploitability": SEVERITY_EXPLOITABILITY.get(severity, "medium"),
-            "confidence": 0.0,
-            "context_chunks": [],
-        }
+        if "rag_result" not in locals():
+            rag_result = fallback_rag_result(cwe_id, severity)
+        reason = "Using built-in CWE/OWASP fallback context" if rag_result.get("context_chunks") else "No RAG context available"
+        llm_result = _fallback_response(severity, reason)
     else:
         rag_result = {
             "owasp_category": extract_owasp_category(rag_raw),
@@ -184,10 +226,10 @@ def analyze_batch(findings: List[Dict], use_llm: bool = True) -> List[Dict]:
     for finding in findings:
         try:
             verdict = analyze_vulnerability(
-                code_snippet=finding.get("message", ""),  # best available context
-                cwe_id=finding.get("cwe_id", "CWE-Unknown"),
+                code_snippet=finding.get("code_snippet", finding.get("message", "")),
+                cwe_id=finding.get("cwe_id", finding.get("cwe", "CWE-Unknown")),
                 severity=finding.get("severity", "medium"),
-                vuln_type=finding.get("vuln_type", finding.get("message", "")),
+                vuln_type=finding.get("category", finding.get("message", "")),
                 static_findings=[finding],
                 file_path=finding.get("file_path", "unknown"),
                 line=finding.get("line", 0),
@@ -203,6 +245,9 @@ def analyze_batch(findings: List[Dict], use_llm: bool = True) -> List[Dict]:
                 "file_path": finding.get("file_path", "unknown"),
                 "line": finding.get("line", 0),
                 "tool": finding.get("tool", "unknown"),
+                "vuln_type": finding.get("message", "Analysis Error"),
+                "message": finding.get("message", ""),
+                "code_snippet": finding.get("code_snippet", finding.get("message", "")),
                 "final_severity": normalize_severity(finding.get("severity", "medium")),
                 "risk_score": 50.0,
                 "risk_category": "MEDIUM",

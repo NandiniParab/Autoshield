@@ -60,6 +60,18 @@ CWE_STATIC_FIXES: Dict[str, Dict] = {
         "key_risks": ["SQL injection leading to data theft", "Authentication bypass", "Database destruction"],
         "reasoning": "SQL injection allows attackers to manipulate database queries by injecting malicious SQL through user-controlled input.",
     },
+    "CWE-327": {
+        "recommended_fix": "Replace MD5/SHA1 with a modern hashing algorithm. Use SHA-256 or SHA-512 for general hashing, and bcrypt, scrypt, or Argon2 for passwords.",
+        "fix_code": "const crypto = require('crypto');\nconst hash = crypto.createHash('sha256').update(data).digest('hex');",
+        "key_risks": ["Weak hashes can be cracked quickly", "Collision attacks can undermine integrity checks", "Password hashes become easy to recover"],
+        "reasoning": "MD5 and SHA1 are cryptographically broken or too weak for security-sensitive hashing. Modern applications should use SHA-256 or stronger algorithms, with dedicated password hashing functions for credentials.",
+    },
+    "CWE-798": {
+        "recommended_fix": "Remove hardcoded credentials from source code. Load secrets from environment variables or a managed secrets vault, and rotate any exposed secret.",
+        "fix_code": "const apiKey = process.env.API_KEY;\nif (!apiKey) {\n  throw new Error('API_KEY is required');\n}",
+        "key_risks": ["Credential leakage through source control", "Unauthorized API or database access", "Difficult secret rotation across environments"],
+        "reasoning": "Hardcoded secrets are often copied into repositories, logs, builds, and developer machines. Once exposed, they should be considered compromised and moved to environment-specific secret storage.",
+    },
     "CWE-95": {
         "recommended_fix": "Never use eval() or Function() with user-controlled data. Parse JSON with JSON.parse(), execute logic with explicit conditionals.",
         "fix_code": "// Instead of:\neval(userInput);\n\n// For JSON:\nconst data = JSON.parse(userInput);\n\n// For dynamic keys:\nconst allowedActions = { 'run': runFn, 'stop': stopFn };\nif (allowedActions[userInput]) allowedActions[userInput]();",

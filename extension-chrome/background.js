@@ -72,7 +72,7 @@ async function handleSidePanelMessage(msg) {
       if (tab?.id) {
         sendStep('📄 Extracting page data...');
 
-        chrome.tabs.sendMessage(tab.id, { type: 'extractPageData' }, (response) => {
+        chrome.tabs.sendMessage(tab.id, { type: 'extractPageData', useLLM: !!msg.useLLM }, (response) => {
 
           if (chrome.runtime.lastError) {
             sendStep('⚙️ Injecting content script...');
@@ -83,7 +83,7 @@ async function handleSidePanelMessage(msg) {
             }).then(() => {
               setTimeout(() => {
                 sendStep('📄 Extracting after injection...');
-                chrome.tabs.sendMessage(tab.id, { type: 'extractPageData' });
+                chrome.tabs.sendMessage(tab.id, { type: 'extractPageData', useLLM: !!msg.useLLM });
               }, 500);
             });
 

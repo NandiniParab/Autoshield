@@ -1,0 +1,6 @@
+rules:
+  - id: test-eval
+    message: test
+    severity: ERROR
+    languages: [javascript]
+    pattern: eval(...)

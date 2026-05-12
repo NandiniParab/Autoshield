@@ -3,7 +3,8 @@
 import asyncio
 
 # ✅ REQUIRED for Playwright on Windows (must be at top, before anything async)
-asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,12 +15,17 @@ from typing import List, Optional
 import models
 import database
 import scanner
-from crawler import scan_website_runtime
+from crawler import scan_website_compliance, scan_website_runtime
 
 # RAG imports
 from rag.retrieval.retriever import retrieve_context
 from rag.services.rag_service import analyze_vulnerability, analyze_batch
 from rag.services.llm_service import generate_fix_for_snippet
+
+# Routers
+from api.rag_routes import router as rag_router
+from api.fix_routes import router as fix_router
+from api.agent_routes import router as agent_router
 
 app = FastAPI(title="AutoShield API", version="2.0.0")
 
@@ -33,6 +39,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register routers
+app.include_router(rag_router)
+app.include_router(fix_router, prefix="/api", tags=["Fix Generator"])
+app.include_router(agent_router, prefix="/api/agent", tags=["Agentic Security Graph"])
+
+VULNERABILITY_DB_FIELDS = {"tool", "file_path", "line", "message", "severity"}
+
+
+def _to_vulnerability_record(finding: dict) -> dict:
+    return {
+        key: finding.get(key)
+        for key in VULNERABILITY_DB_FIELDS
+        if key in finding
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -65,6 +86,7 @@ class GenerateFixRequest(BaseModel):
     code_snippet: str
     vuln_type: str = ""
     cwe_id: str = "CWE-Unknown"
+    language: str = ""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -91,7 +113,7 @@ def analyze_code(path: str, db: Session = Depends(database.get_db)):
     try:
         findings = scanner.run_scanners(path)
         for f in findings:
-            db_vuln = models.Vulnerability(**f)
+            db_vuln = models.Vulnerability(**_to_vulnerability_record(f))
             db.add(db_vuln)
         db.commit()
         return {"count": len(findings), "results": findings}
@@ -122,7 +144,10 @@ def analyze_full(request: FullScanRequest, db: Session = Depends(database.get_db
         db.flush()
 
         for f in static_findings:
-            db_vuln = models.Vulnerability(scan_id=scan_record.id, **f)
+            db_vuln = models.Vulnerability(
+                scan_id=scan_record.id,
+                **_to_vulnerability_record(f),
+            )
             db.add(db_vuln)
 
         enriched = analyze_batch(static_findings, use_llm=request.use_llm)
@@ -175,10 +200,15 @@ def generate_fix(payload: GenerateFixRequest):
     using Gemini. Returns fix_code, explanation, and step-by-step guidance.
     """
     try:
-        result = generate_fix_for_snippet(
-            code_snippet=payload.code_snippet,
-            vuln_type=payload.vuln_type,
-            cwe_id=payload.cwe_id,
+        from rag.services.fix_generator import FixGenerator
+
+        language = payload.language or _detect_language_from_code(payload.code_snippet)
+        generator = FixGenerator()
+        result = generator.generate_fix(
+            language=language,
+            vulnerability_type=payload.vuln_type or payload.cwe_id or "Unknown",
+            original_code=payload.code_snippet,
+            evidence=[],
         )
         return result
     except Exception as e:
@@ -201,6 +231,22 @@ def apply_fix(payload: ApplyFixRequest):
         raise HTTPException(status_code=404, detail=f"File not found: {payload.file_path}")
 
     try:
+        from rag.services.patch_validator import PatchValidator
+
+        language = _detect_language_from_file(payload.file_path)
+        validation = PatchValidator().validate_patch(
+            language=language,
+            vulnerability_type="",
+            original_code=payload.original_code,
+            fixed_code=payload.fix_code,
+        )
+        if not validation.get("passed"):
+            return {
+                "success": False,
+                "message": "Patch validation failed. File was not changed.",
+                "validation": validation,
+            }
+
         with open(payload.file_path, "r", encoding="utf-8", errors="replace") as f:
             original_content = f.read()
 
@@ -240,6 +286,7 @@ def apply_fix(payload: ApplyFixRequest):
 
         return {
             "success": True,
+            "validation": validation,
             "strategy": strategy,
             "file_path": payload.file_path,
             "message": f"Fix applied successfully using {strategy}",
@@ -279,9 +326,19 @@ async def analyze_runtime(url: str, db: Session = Depends(database.get_db)):
     db.refresh(new_scan)
 
     try:
-        findings = await scan_website_runtime(url)
+        report = await scan_website_compliance(url)
+        findings = [
+            {
+                "tool": "crawler",
+                "file_path": url,
+                "line": 0,
+                "message": issue.get("title", "Runtime compliance issue"),
+                "severity": issue.get("severity", "MEDIUM"),
+            }
+            for issue in report.get("issues", [])
+        ]
         for f in findings:
-            vuln = models.Vulnerability(scan_id=new_scan.id, **f)
+            vuln = models.Vulnerability(scan_id=new_scan.id, **_to_vulnerability_record(f))
             db.add(vuln)
         new_scan.status = "completed"
         db.commit()
@@ -290,6 +347,11 @@ async def analyze_runtime(url: str, db: Session = Depends(database.get_db)):
             "scan_id": new_scan.id,
             "url": url,
             "issues": len(findings),
+            "compliance_score": report.get("compliance_score", 100),
+            "compliance": {
+                "compliance_score": report.get("compliance_score", 100),
+                "issues": report.get("issues", []),
+            },
         }
     except Exception as e:
         db.rollback()
@@ -370,3 +432,28 @@ def _build_summary(results: List[dict]) -> dict:
         else:
             summary["informational"] += 1
     return summary
+
+
+def _detect_language_from_file(file_path: str) -> str:
+    ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+    return {
+        "py": "python",
+        "js": "javascript",
+        "jsx": "javascript",
+        "ts": "typescript",
+        "tsx": "typescript",
+    }.get(ext, "")
+
+
+def _detect_language_from_code(code: str) -> str:
+    import re
+
+    if re.search(r"^\s*(def |import |from |class |if __name__)", code, re.M):
+        return "python"
+    if re.search(r"\b(document|window|innerHTML|outerHTML|textContent|querySelector)\b", code):
+        return "javascript"
+    if re.search(r"^\s*(const |let |var |function |.*=>|require\()", code, re.M):
+        return "javascript"
+    if re.search(r"^\s*(interface |type )|:\s*(string|number|boolean)\b", code, re.M):
+        return "typescript"
+    return "python"

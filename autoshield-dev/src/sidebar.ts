@@ -44,6 +44,15 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
             line: msg.line,
             originalCode: msg.originalCode,
             fixCode: msg.fixCode,
+            validationPassed: msg.validationPassed,
+          });
+          break;
+        case 'learnAboutIssue':
+          vscode.commands.executeCommand('autoshield.learnAboutIssue', {
+            vulnType: msg.vulnType,
+            cweId: msg.cweId,
+            codeSnippet: msg.codeSnippet,
+            findingIndex: msg.findingIndex,
           });
           break;
       }
@@ -380,6 +389,23 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
       .abtn.fix:hover         { background: var(--green-dim); color: #7acc6a; }
       .abtn.apply             { color: var(--yellow); }
       .abtn.apply:hover       { background: var(--yellow-bg); color: var(--amber); }
+      .abtn.learn             { color: #6aaad4; }
+      .abtn.learn:hover       { background: #080e18; color: #9dd4f4; }
+
+      /* ── Validation badge ────────────────────── */
+      .val-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 7.5px;
+        letter-spacing: 0.08em;
+        padding: 2px 6px;
+        border-radius: 2px;
+        font-weight: 600;
+      }
+      .val-pass { background: var(--green-dim); color: #7acc6a; border: 1px solid var(--green); }
+      .val-fail { background: #280808; color: #cc5555; border: 1px solid var(--red); }
+      .val-warn { background: #221200; color: #cc9944; border: 1px solid var(--orange); }
 
       /* ── Fix block ───────────────────────────── */
       .fix-wrap { border-top: 1px solid var(--green-dim); }
@@ -394,6 +420,7 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
         display: flex;
         justify-content: space-between;
         align-items: center;
+        gap: 6px;
       }
 
       .fix-code {
@@ -416,6 +443,48 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
         font-family: var(--font-sans);
         border-top: 1px solid var(--border);
         line-height: 1.5;
+      }
+
+      /* ── Learn panel ─────────────────────────── */
+      .learn-wrap {
+        border-top: 1px solid #0d2030;
+        background: #080e18;
+      }
+
+      .learn-head {
+        padding: 4px 12px;
+        font-size: 8px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #6aaad4;
+        background: #0a1828;
+        border-bottom: 1px solid #0d2030;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .learn-section {
+        padding: 5px 12px;
+        border-bottom: 1px solid #0a1020;
+      }
+
+      .learn-section:last-child { border-bottom: none; }
+
+      .learn-label {
+        font-size: 7.5px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #3a6a9a;
+        font-weight: 600;
+        margin-bottom: 3px;
+      }
+
+      .learn-text {
+        font-size: 9.5px;
+        color: #5a8aaa;
+        line-height: 1.55;
+        font-family: var(--font-sans);
       }
 
       /* ── Spinner ─────────────────────────────── */
@@ -464,6 +533,7 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
         const vscode = acquireVsCodeApi();
         let currentResults = [];
 
+
         function runScan() {
           setStatus('Scanning workspace...', 'scanning', true);
           vscode.postMessage({ type: 'runScan' });
@@ -501,12 +571,26 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
         function applyFix(i) {
           const r = currentResults[i];
           if (!r || !r._fixCode) return;
+          // Pass validationPassed so the extension command can reject unvalidated patches
           vscode.postMessage({
             type: 'applyFix',
             filePath: r.file_path,
             line: r.line,
             originalCode: r.code_snippet || '',
             fixCode: r._fixCode,
+            validationPassed: r._validationPassed === true,
+          });
+        }
+
+        function learnAboutIssue(i) {
+          const r = currentResults[i];
+          if (!r) return;
+          vscode.postMessage({
+            type: 'learnAboutIssue',
+            findingIndex: i,
+            vulnType: r.vuln_type || '',
+            cweId: r.cwe_id || '',
+            codeSnippet: r.code_snippet || r.message || '',
           });
         }
 
@@ -532,16 +616,61 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
             .replace(/>/g,'&gt;');
         }
 
-        function fixBlock(i, code, desc) {
+        function fixBlock(i, code, desc, validated) {
           if (!code && !desc) return '';
+          const badge = validated === true
+            ? \`<span class="val-badge val-pass">&#10003; Validated</span>\`
+            : validated === false
+            ? \`<span class="val-badge val-fail">&#9888; Unverified</span>\`
+            : '';
           return \`<div class="fix-wrap" id="fix-wrap-\${i}">
             <div class="fix-head">
-              Fix ready
-              \${code ? \`<button class="abtn apply" style="flex:none;padding:2px 8px" onclick="applyFix(\${i})">Apply</button>\` : ''}
+              <span>Patch Preview</span>
+              <span style="display:flex;align-items:center;gap:6px">
+                \${badge}
+                \${code ? \`<button class="abtn apply" style="flex:none;padding:2px 8px" id="apply-btn-\${i}" onclick="applyFix(\${i})">Apply Fix</button>\` : ''}
+              </span>
             </div>
             \${code ? \`<div class="fix-code">\${esc(code)}</div>\` : ''}
             \${desc  ? \`<div class="fix-desc">\${esc(desc)}</div>\` : ''}
           </div>\`;
+        }
+
+        function learnBlock(i, d) {
+          if (!d) return '';
+          const sections = [
+            { label: 'What is it?',    key: 'what_is_it' },
+            { label: 'How it works',   key: 'how_it_works' },
+            { label: 'Real-world',     key: 'real_world' },
+            { label: 'Why dangerous',  key: 'why_dangerous' },
+            { label: 'How to fix',     key: 'how_to_fix' },
+            { label: 'CWE / OWASP',   key: 'cwe_owasp' },
+          ];
+          const html = sections
+            .filter(s => d[s.key])
+            .map(s => \`<div class="learn-section">
+              <div class="learn-label">\${s.label}</div>
+              <div class="learn-text">\${esc(d[s.key])}</div>
+            </div>\`)
+            .join('');
+          const links = (d.further_reading || []).slice(0, 3);
+          const linksHtml = links.length
+            ? \`<div class="learn-section"><div class="learn-label">Further reading</div>\${
+                links.map(u => \`<div class="learn-text" style="margin-bottom:2px">&#8594; \${esc(u)}</div>\`).join('')
+              }</div>\`
+            : '';
+          return \`<div class="learn-wrap" id="learn-wrap-\${i}">
+            <div class="learn-head">
+              <span>&#128218; About: \${esc(d.vulnerability_type || '')}</span>
+              <button class="abtn" style="flex:none;padding:1px 6px;font-size:7px" onclick="closePanelEl('learn-wrap-\${i}')">&#10005;</button>
+            </div>
+            \${html}\${linksHtml}
+          </div>\`;
+        }
+
+        function closePanelEl(id) {
+          const el = document.getElementById(id);
+          if (el) el.remove();
         }
 
         function updateSummary(results) {
@@ -572,7 +701,7 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
             const cat   = (r.risk_category || 'MEDIUM').toUpperCase();
             const score = r.risk_score || 0;
             const fp    = r.file_path || 'unknown';
-            const fn    = fp.split(/[\\/]/).pop();
+            const fn    = fp.split(/[\\\/]/).pop();
             const cwe   = r.cwe_id ? ' [' + r.cwe_id + ']' : '';
             const hasF  = !!(r.fix_code || r.recommended_fix);
             const risks = r.key_risks || [];
@@ -605,9 +734,11 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
                 <div class="act-row">
                   <button class="abtn goto" onclick="jumpToLine('\${fp}',\${r.line||1})">Go to line \${r.line||1}</button>
                   <button class="abtn fix" id="fb-\${i}" onclick="generateFix(\${i})">Get Fix</button>
+                  <button class="abtn learn" id="lb-\${i}" onclick="learnAboutIssue(\${i})">Learn</button>
                 </div>
-                \${hasF ? fixBlock(i, r.fix_code||'', r.recommended_fix||'') : ''}
+                \${hasF ? fixBlock(i, r.fix_code||'', r.recommended_fix||'', null) : ''}
                 <div id="fa-\${i}"></div>
+                <div id="la-\${i}"></div>
               </div>
             \`;
             out.appendChild(card);
@@ -637,6 +768,7 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
             setStatus('Error: ' + msg.error, 'error');
           }
 
+          // ── Fix pipeline messages ─────────────────────────────────────
           if (msg.type === 'fixGenerating') {
             const btn = document.getElementById('fb-' + msg.findingIndex);
             if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Generating'; }
@@ -647,9 +779,22 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
             const d = msg.fixData || {};
             const btn = document.getElementById('fb-' + i);
             if (btn) { btn.disabled = false; btn.innerText = 'Regenerate'; }
-            if (currentResults[i]) currentResults[i]._fixCode = d.fix_code || '';
+
+            // d.success = true → validated patch; false → unverified
+            const validated = d.success === true ? true : (d.success === false ? false : null);
+            // New pipeline returns fixed_code; legacy returns fix_code
+            const code = d.fixed_code || d.fix_code || '';
+
+            if (currentResults[i]) {
+              currentResults[i]._fixCode = code;
+              // Store whether the backend declared this patch as validated
+              // so applyFix() can forward it to the extension command
+              currentResults[i]._validationPassed = (validated === true);
+            }
+
             const area = document.getElementById('fa-' + i);
-            if (area) area.innerHTML = fixBlock(i, d.fix_code||'', d.explanation||'');
+            if (area) area.innerHTML = fixBlock(i, code, d.explanation || d.message || '', validated);
+
             const body = document.getElementById('b-' + i);
             const chev = document.getElementById('c-' + i);
             if (body && !body.classList.contains('open')) {
@@ -664,6 +809,34 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
             if (btn) { btn.disabled = false; btn.innerText = 'Retry'; }
             const area = document.getElementById('fa-' + i);
             if (area) area.innerHTML = '<div style="padding:5px 12px;font-size:9px;color:#cc3333;letter-spacing:0.04em">Error: ' + esc(msg.error) + '</div>';
+          }
+
+          // ── Learn About This Issue messages ───────────────────────────
+          if (msg.type === 'learnLoading') {
+            const btn = document.getElementById('lb-' + msg.findingIndex);
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Loading'; }
+          }
+
+          if (msg.type === 'learnLoaded') {
+            const i = msg.findingIndex;
+            const btn = document.getElementById('lb-' + i);
+            if (btn) { btn.disabled = false; btn.innerText = 'Learn'; }
+            const area = document.getElementById('la-' + i);
+            if (area) area.innerHTML = learnBlock(i, msg.explainData);
+            const body = document.getElementById('b-' + i);
+            const chev = document.getElementById('c-' + i);
+            if (body && !body.classList.contains('open')) {
+              body.classList.add('open');
+              if (chev) chev.classList.add('open');
+            }
+          }
+
+          if (msg.type === 'learnError') {
+            const i = msg.findingIndex;
+            const btn = document.getElementById('lb-' + i);
+            if (btn) { btn.disabled = false; btn.innerText = 'Learn'; }
+            const area = document.getElementById('la-' + i);
+            if (area) area.innerHTML = '<div style="padding:5px 12px;font-size:9px;color:#cc3333">Error: ' + esc(msg.error) + '</div>';
           }
         });
       </script>

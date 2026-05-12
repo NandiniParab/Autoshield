@@ -229,6 +229,21 @@
       flex-shrink: 0;
     }
 
+    .llm-pill {
+      display: inline-block;
+      font-size: 7px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      padding: 2px 5px;
+      border: 1px solid var(--blue);
+      color: var(--blue);
+      background: var(--blue-bg);
+      border-radius: 2px;
+      text-transform: uppercase;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
     .sev-tag {
       font-size: 7px;
       font-weight: 600;
@@ -467,15 +482,15 @@
 
   <!-- Tabs -->
   <div class="tabs">
-    <button class="tab-btn active" id="tab-security" onclick="switchTab('security')">⚡ Security</button>
-    <button class="tab-btn" id="tab-compliance" onclick="switchTab('compliance')">© Compliance</button>
+    <button class="tab-btn active" id="tab-security">⚡ Security</button>
+    <button class="tab-btn" id="tab-compliance">© Compliance</button>
   </div>
 
   <!-- Toolbar -->
   <div class="toolbar">
-    <button class="tbtn primary" id="btnScan" onclick="runScan()">[ Scan ]</button>
-    <button class="tbtn" id="btnDeep" onclick="runDeepScan()">[ Deep ]</button>
-    <button class="tbtn" id="btnClear" onclick="clearAll()">[ Clear ]</button>
+    <button class="tbtn primary" id="btnScan">[ Scan ]</button>
+    <button class="tbtn" id="btnDeep">[ Deep ]</button>
+    <button class="tbtn" id="btnClear">[ Clear ]</button>
   </div>
 
   <!-- Status -->

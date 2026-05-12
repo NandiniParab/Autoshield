@@ -1,5 +1,6 @@
 // sidepanel.js
 // AutoShield Side Panel — UI logic, backend communication, rendering
+// CSP COMPLIANT (Manifest V3)
 
 const BACKEND = 'http://127.0.0.1:8000';
 
@@ -13,11 +14,59 @@ let isScanning = false;
 
 // ─── Init ────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  // Static buttons
   document.getElementById("btnScan")?.addEventListener("click", runScan);
   document.getElementById("btnDeep")?.addEventListener("click", runDeepScan);
+  document.getElementById("btnClear")?.addEventListener("click", clearAll);
+
+  // Tab buttons
+  document.getElementById("tab-security")?.addEventListener("click", () => switchTab('security'));
+  document.getElementById("tab-compliance")?.addEventListener("click", () => switchTab('compliance'));
+
+  // Global Click Delegate (for dynamic elements)
+  document.addEventListener('click', handleGlobalClick);
+
   connectToBackground();
   getCurrentTabUrl();
 });
+
+function handleGlobalClick(e) {
+  const target = e.target;
+
+  // 1. Card Toggle (Security & Compliance)
+  const cardHead = target.closest('.card-head');
+  if (cardHead && cardHead.dataset.toggleBody) {
+    toggleCard(cardHead.dataset.toggleBody, cardHead.dataset.toggleChev);
+    return;
+  }
+
+  // 2. Inner Tab Switcher (Security Analysis/Fix)
+  if (target.classList.contains('inner-tab')) {
+    const cardIdx = target.dataset.cardIdx;
+    const tabType = target.dataset.tabType;
+    if (cardIdx && tabType) {
+      switchInnerTab(cardIdx, tabType, target);
+    }
+    return;
+  }
+
+  // 3. Copy Button
+  if (target.classList.contains('copy-btn')) {
+    const code = target.dataset.code;
+    if (code) {
+      copyFix(target, code);
+    }
+    return;
+  }
+
+  // 4. Compliance Clean List Toggle
+  const cleanHeader = target.closest('.section-header');
+  if (cleanHeader && cleanHeader.id === 'clean-list-header') {
+    const cl = document.getElementById('clean-list');
+    if (cl) cl.style.display = cl.style.display === 'none' ? 'block' : 'none';
+    return;
+  }
+}
 
 function logStep(message) {
   const logDiv = document.getElementById("log");
@@ -211,11 +260,7 @@ async function analyzeSecurityData(pageData, useLLM = false) {
 }
 
 // ─── Fallback Result (backend unreachable) ────────────────────────────
-// NOTE: This is only used when the HTTP request to the backend fails entirely.
-// The backend now always returns static fixes via risk_engine.py's CWE dictionary,
-// so this fallback should rarely be seen in practice.
 function buildFallbackResult(finding) {
-  // Minimal static fixes for the most common CWEs — mirrors the backend dict
   const QUICK_FIXES = {
     'CWE-693': { fix: 'Add a Content-Security-Policy meta tag to your <head>.', code: "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'\">" },
     'CWE-922': { fix: "Don't store auth tokens or sensitive data in localStorage. Use HttpOnly cookies set by the server instead.", code: "// Use server-set HttpOnly cookies for auth tokens\n// Avoid: localStorage.setItem('token', jwt)" },
@@ -289,54 +334,105 @@ function buildSecurityFindings(pageData) {
 // ─── Compliance Analysis ──────────────────────────────────────────────
 async function analyzeComplianceData(pageData) {
   const comp = pageData.compliance || {};
-  const issues = [];
-  const clean = [];
+  try {
+    const res = await fetch(`${BACKEND}/rag/compliance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        page_url:           currentUrl,
+        security:           pageData.security || {},
+        images:             comp.images             || [],
+        videos:             comp.videos             || [],
+        audios:             comp.audios             || [],
+        fonts:              comp.fonts              || [],
+        stylesheets:        comp.externalStylesheets|| [],
+        text_blocks:        comp.textBlocks         || [],
+        iframe_embeds:      comp.iframeEmbeds       || [],
+        license_indicators: comp.licenseIndicators  || {},
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.summary && !data.summary.copyrightText) {
+        data.summary.copyrightText = (comp.licenseIndicators || {}).copyrightText || '';
+      }
+      logStep('🤖 Compliance: LLM backend used');
+      return data;
+    }
+  } catch (_) {
+    logStep('⚠ Compliance backend unreachable — using client-side fallback');
+  }
 
-  const FREE_DOMAINS = new Set(['images.unsplash.com','source.unsplash.com','cdn.pixabay.com','pixabay.com','images.pexels.com','www.pexels.com','fonts.googleapis.com','fonts.gstatic.com','cdnjs.cloudflare.com','cdn.jsdelivr.net','unpkg.com','ajax.googleapis.com']);
-  const PAID_DOMAINS = new Set(['shutterstock.com','gettyimages.com','istockphoto.com','adobestock.com','stock.adobe.com','dreamstime.com','alamy.com','depositphotos.com']);
+  const issues = [];
+  const clean  = [];
+  const sec = pageData.security || {};
+
+  if (!sec.metaTags?.csp)
+    issues.push({ category: 'Security Headers', title: 'Missing CSP', severity: 'HIGH',
+      recommendation: 'Add a strict Content-Security-Policy header.' });
+  if (!sec.metaTags?.xFrameOptions)
+    issues.push({ category: 'Security Headers', title: 'Missing X-Frame-Options', severity: 'MEDIUM',
+      recommendation: 'Add X-Frame-Options or CSP frame-ancestors.' });
+  if (!sec.metaTags?.referrerPolicy)
+    issues.push({ category: 'Security Headers', title: 'Missing Referrer-Policy', severity: 'LOW',
+      recommendation: 'Add Referrer-Policy: strict-origin-when-cross-origin.' });
+  if (sec.mixedContent?.length)
+    issues.push({ category: 'Mixed Content', title: 'Mixed content HTTP resources', severity: 'HIGH',
+      recommendation: 'Load all page resources over HTTPS.', evidence: `${sec.mixedContent.length} resource(s)` });
+  if (sec.inlineScripts?.length)
+    issues.push({ category: 'Content Security Policy', title: 'Inline scripts', severity: 'MEDIUM',
+      recommendation: 'Move inline scripts to external files and enforce CSP without unsafe-inline.', evidence: `${sec.inlineScripts.length} script(s)` });
+  if (sec.inlineScripts?.some((s) => s.hasEval) || sec.dangerousPatterns?.some((p) => p.pattern === 'eval()'))
+    issues.push({ category: 'Code Execution', title: 'eval usage', severity: 'HIGH',
+      recommendation: 'Remove eval/new Function and use safe parsing or dispatch.' });
+  const noSri = sec.externalScripts?.filter((s) => s.isExternal && !s.hasSRI) || [];
+  if (noSri.length)
+    issues.push({ category: 'Supply Chain', title: 'Third-party scripts without integrity', severity: 'MEDIUM',
+      recommendation: 'Add integrity and crossorigin attributes to third-party scripts.', evidence: `${noSri.length} script(s)` });
 
   comp.images?.forEach((img) => {
     if (!img.src || img.src.startsWith('data:')) return;
-    const domain = img.domain || '';
-    if ([...PAID_DOMAINS].some((d) => domain === d || domain.endsWith('.' + d)))
-      issues.push({ type: 'image', src: img.src, domain, severity: 'HIGH', issue: 'Image may be hotlinked from paid stock site', recommendation: `Verify you have a license for images from ${domain}.` });
-    else if (FREE_DOMAINS.has(domain))
-      clean.push({ type: 'image', src: img.src, status: 'free-source', note: `Free source: ${domain}` });
-    else if (img.isExternal)
-      issues.push({ type: 'image', src: img.src, domain, severity: 'REVIEW', issue: 'External image — license unknown', recommendation: 'Verify you have rights to use this image or host it locally.' });
+    if (img.isExternal)
+      issues.push({ type: 'image', src: img.src, domain: img.domain || '', severity: 'REVIEW',
+        issue: 'External image — license unknown',
+        recommendation: 'Verify you have rights to use this image or host it locally.' });
   });
 
   comp.videos?.forEach((v) => {
-    if (!v.src || !v.isExternal) return;
-    issues.push({ type: 'video', src: v.src, domain: v.domain, severity: 'REVIEW', issue: 'External video resource — license unknown', recommendation: 'Verify licensing or use an official embed player.' });
+    if (v.src && v.isExternal)
+      issues.push({ type: 'video', src: v.src, domain: v.domain || '', severity: 'REVIEW',
+        issue: 'External video resource — license unknown',
+        recommendation: 'Verify licensing or use an official embed player.' });
+  });
+
+  comp.audios?.forEach((a) => {
+    if (a.src && a.isExternal)
+      issues.push({ type: 'audio', src: a.src, domain: a.domain || '', severity: 'REVIEW',
+        issue: 'External audio resource — license unknown',
+        recommendation: 'Verify licensing before using this audio.' });
   });
 
   comp.iframeEmbeds?.forEach((frame) => {
-    if (frame.isYouTube || frame.isVimeo)
+    if (frame.isYouTube || frame.isVimeo || frame.isSpotify || frame.isSoundCloud)
       clean.push({ type: 'embed', src: frame.src, status: 'ok', note: 'Official platform embed — generally OK' });
   });
 
-  const li = comp.licenseIndicators || {};
-  const summary = {
-    copyrightText: li.copyrightText || '',
-    stockImageWarnings: (li.shutterstockImages || 0) + (li.gettyImages || 0) + (li.adobeStockImages || 0),
-    freeImages: (li.unsplashImages || 0) + (li.pixabayImages || 0) + (li.pexelsImages || 0),
-  };
+  comp.fonts?.forEach((f) => {
+    clean.push({ type: 'font', src: f.src, status: 'free-source', note: `Font via ${f.domain || f.via || 'external'}` });
+  });
 
-  return { issues, clean, summary };
+  const li = comp.licenseIndicators || {};
+  const complianceScore = scoreCompliance(issues);
+  return { compliance_score: complianceScore, issues, clean, summary: {
+    copyrightText:      li.copyrightText || '',
+    compliance_score:   complianceScore,
+    issues_count:       issues.length,
+    total_assets:       (comp.images?.length || 0) + (comp.videos?.length || 0) + (comp.fonts?.length || 0),
+    llm_used:           false,
+  }};
 }
 
-// ════════════════════════════════════════════════════════════════════
-// RENDER SECURITY RESULTS
-//
-// Changes vs previous version:
-//  • ALL cards now auto-expand (not just CRITICAL/HIGH)
-//  • "✦ Fix" pill shown when fix_code present
-//  • "⚡ LLM" badge shown when AI reasoning was used (llm_available=true)
-//  • Inner tabs: Analysis | Fix Code when both exist
-//  • Copy button on fix code block
-//  • Offline note shows quick fix anyway (from client-side fallback dict)
-// ════════════════════════════════════════════════════════════════════
+// ─── Render Security Results ────────────────────────────────────────
 function renderSecurityResults(results) {
   const out = document.getElementById('security-out');
   if (!results || results.length === 0) {
@@ -345,7 +441,6 @@ function renderSecurityResults(results) {
   }
 
   out.innerHTML = '';
-
   const header = document.createElement('div');
   header.className = 'section-header';
   header.innerHTML = `Vulnerabilities <span class="section-count">${results.length}</span>`;
@@ -362,11 +457,13 @@ function renderSecurityResults(results) {
     const card = document.createElement('div');
     card.className = 'card';
 
-    // ── Header ───────────────────────────────────────────────────────
     const headDiv = document.createElement('div');
     headDiv.className = 'card-head';
-    if (hasBody) headDiv.setAttribute('onclick', `toggleCard('s-${i}','s-chev-${i}')`);
-    headDiv.style.cursor = hasBody ? 'pointer' : 'default';
+    if (hasBody) {
+      headDiv.dataset.toggleBody = `s-${i}`;
+      headDiv.dataset.toggleChev = `s-chev-${i}`;
+      headDiv.style.cursor = 'pointer';
+    }
 
     headDiv.innerHTML = `
       <span class="sev-tag sev-${cat}">${cat}</span>
@@ -389,22 +486,18 @@ function renderSecurityResults(results) {
     `;
     card.appendChild(headDiv);
 
-    // ── Body — ALL CARDS START EXPANDED ──────────────────────────────
     if (hasBody) {
       const bodyDiv = document.createElement('div');
       bodyDiv.id = `s-${i}`;
-      bodyDiv.className = 'card-body open'; // always open
+      bodyDiv.className = 'card-body open';
 
       if (r._fallback && !r.recommended_fix) {
-        bodyDiv.innerHTML = `
-          <div class="body-sec offline-note">
-            <span style="color:var(--amber-dim)">⚠ Backend offline</span> — start your FastAPI server to get full AI analysis.
-          </div>`;
+        bodyDiv.innerHTML = `<div class="body-sec offline-note">⚠ Backend offline — start your FastAPI server.</div>`;
       } else if (hasFix && hasAnalysis) {
         bodyDiv.innerHTML = `
           <div class="inner-tabs">
-            <button class="inner-tab active" onclick="switchInnerTab(${i},'analysis',this)">Analysis</button>
-            <button class="inner-tab" onclick="switchInnerTab(${i},'fix',this)">Fix Code</button>
+            <button class="inner-tab active" data-card-idx="${i}" data-tab-type="analysis">Analysis</button>
+            <button class="inner-tab" data-card-idx="${i}" data-tab-type="fix">Fix Code</button>
           </div>
           <div id="s-${i}-analysis">${buildAnalysisHTML(r)}</div>
           <div id="s-${i}-fix" style="display:none">${buildFixHTML(r)}</div>
@@ -414,149 +507,81 @@ function renderSecurityResults(results) {
       } else {
         bodyDiv.innerHTML = buildAnalysisHTML(r);
       }
-
       card.appendChild(bodyDiv);
     }
-
     out.appendChild(card);
   });
 }
 
-// ── Analysis HTML ─────────────────────────────────────────────────────
 function buildAnalysisHTML(r) {
   let html = '';
-
-  if (r.reasoning) {
-    html += `<div class="body-sec">
-      <div class="sec-label">Analysis</div>
-      <div class="body-text">${esc(r.reasoning)}</div>
-    </div>`;
-  }
-
-  if (r.key_risks && r.key_risks.length) {
-    html += `<div class="body-sec">
-      <div class="sec-label">Key Risks</div>
-      <ul class="asset-list">
-        ${r.key_risks.map(k => `<li class="asset-item"><span class="asset-status st-issue">risk</span><span>${esc(k)}</span></li>`).join('')}
-      </ul>
-    </div>`;
-  }
-
-  if (r.recommended_fix) {
-    html += `<div class="body-sec">
-      <div class="sec-label">How to Fix</div>
-      <div class="body-text fix-hint">${esc(r.recommended_fix)}</div>
-    </div>`;
-  }
-
-  return html || `<div class="body-sec"><div class="body-text" style="color:var(--text-lo)">No analysis data</div></div>`;
+  if (r.reasoning) html += `<div class="body-sec"><div class="sec-label">Analysis</div><div class="body-text">${esc(r.reasoning)}</div></div>`;
+  if (r.key_risks?.length) html += `<div class="body-sec"><div class="sec-label">Key Risks</div><ul class="asset-list">${r.key_risks.map(k => `<li class="asset-item"><span class="asset-status st-issue">risk</span><span>${esc(k)}</span></li>`).join('')}</ul></div>`;
+  if (r.recommended_fix) html += `<div class="body-sec"><div class="sec-label">How to Fix</div><div class="body-text fix-hint">${esc(r.recommended_fix)}</div></div>`;
+  return html || `<div class="body-sec"><div class="body-text">No data</div></div>`;
 }
 
-// ── Fix Code HTML ─────────────────────────────────────────────────────
 function buildFixHTML(r) {
   let html = '';
-
-  if (r.recommended_fix) {
-    html += `<div class="body-sec">
-      <div class="sec-label">What to do</div>
-      <div class="body-text fix-hint">${esc(r.recommended_fix)}</div>
-    </div>`;
-  }
-
+  if (r.recommended_fix) html += `<div class="body-sec"><div class="sec-label">What to do</div><div class="body-text fix-hint">${esc(r.recommended_fix)}</div></div>`;
   if (r.fix_code) {
-    const encoded = encodeURIComponent(r.fix_code);
     html += `<div class="fix-wrap">
-      <div class="fix-head">
-        <span>Suggested Fix</span>
-        <button class="copy-btn" onclick="copyFix(this,'${encoded}')">Copy</button>
-      </div>
+      <div class="fix-head"><span>Suggested Fix</span><button class="copy-btn" data-code="${esc(r.fix_code)}">Copy</button></div>
       <div class="fix-code">${esc(r.fix_code)}</div>
     </div>`;
   }
-
   return html;
-}
-
-// ── Inner tab switcher ────────────────────────────────────────────────
-function switchInnerTab(cardIdx, tab, clickedBtn) {
-  const aPanel = document.getElementById(`s-${cardIdx}-analysis`);
-  const fPanel = document.getElementById(`s-${cardIdx}-fix`);
-  if (!aPanel || !fPanel) return;
-
-  const bodyDiv = document.getElementById(`s-${cardIdx}`);
-  bodyDiv?.querySelectorAll('.inner-tab').forEach(t => t.classList.remove('active'));
-  clickedBtn?.classList.add('active');
-
-  if (tab === 'analysis') {
-    aPanel.style.display = '';
-    fPanel.style.display = 'none';
-  } else {
-    aPanel.style.display = 'none';
-    fPanel.style.display = '';
-  }
-}
-
-// ── Copy to clipboard ─────────────────────────────────────────────────
-function copyFix(btn, encodedCode) {
-  const code = decodeURIComponent(encodedCode);
-  navigator.clipboard.writeText(code).then(() => {
-    btn.textContent = 'Copied!';
-    btn.style.color = 'var(--green)';
-    setTimeout(() => { btn.textContent = 'Copy'; btn.style.color = ''; }, 1500);
-  }).catch(() => {
-    btn.textContent = 'Failed';
-    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
-  });
 }
 
 // ─── Render Compliance Results ────────────────────────────────────────
 function renderComplianceResults(data) {
   const out = document.getElementById('compliance-out');
-  if (!data) {
-    out.innerHTML = '<div class="empty"><span class="empty-icon">©</span>No compliance data available</div>';
-    return;
-  }
-
+  if (!data) { out.innerHTML = '<div class="empty">No data</div>'; return; }
   out.innerHTML = '';
 
-  if (data.summary) {
-    const s = data.summary;
-    if (s.copyrightText || s.stockImageWarnings > 0 || s.freeImages > 0) {
-      const bannerDiv = document.createElement('div');
-      bannerDiv.style.cssText = 'padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg2);font-size:9px;color:var(--text-lo);line-height:1.8';
-      bannerDiv.innerHTML = `
-        ${s.copyrightText ? `<div style="color:var(--text-dim)">📄 ${esc(s.copyrightText)}</div>` : ''}
-        ${s.stockImageWarnings > 0 ? `<div style="color:#cc7700">⚠ ${s.stockImageWarnings} potential paid stock image source(s)</div>` : ''}
-        ${s.freeImages > 0 ? `<div style="color:var(--green)">✓ ${s.freeImages} image(s) from known free sources</div>` : ''}
-      `;
-      out.appendChild(bannerDiv);
-    }
+  const s = data.summary || {};
+  const bannerParts = [];
+  if (data.compliance_score !== undefined) bannerParts.push(`<div style="color:var(--text-dim)">Score: ${esc(data.compliance_score)}/100</div>`);
+  if (s.copyrightText)        bannerParts.push(`<div style="color:var(--text-dim)">📄 ${esc(s.copyrightText)}</div>`);
+  if (s.paid_stock_warnings > 0) bannerParts.push(`<div style="color:#cc7700">⚠ ${s.paid_stock_warnings} potential paid stock source(s)</div>`);
+  if (s.free_assets > 0)     bannerParts.push(`<div style="color:var(--green)">✓ ${s.free_assets} asset(s) from known free sources</div>`);
+  if (s.total_assets > 0)    bannerParts.push(`<div style="color:var(--text-lo)">📦 ${s.total_assets} total asset(s) scanned</div>`);
+  if (data.llm_used)         bannerParts.push(`<div style="color:var(--blue)">⚡ LLM-powered analysis</div>`);
+
+  if (bannerParts.length) {
+    const banner = document.createElement('div');
+    banner.style.cssText = 'padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg2);font-size:9px;color:var(--text-lo);line-height:1.8';
+    banner.innerHTML = bannerParts.join('');
+    out.appendChild(banner);
   }
 
-  if (data.issues?.length > 0) {
+  if (data.issues?.length) {
     const issHeader = document.createElement('div');
     issHeader.className = 'section-header';
-    issHeader.innerHTML = `Issues Requiring Review <span class="section-count">${data.issues.length}</span>`;
+    issHeader.innerHTML = `Issues <span class="section-count">${data.issues.length}</span>`;
     out.appendChild(issHeader);
 
     data.issues.forEach((issue, i) => {
       const card = document.createElement('div');
       card.className = 'card';
-      const sevClass = issue.severity === 'HIGH' ? 'sev-HIGH' : 'sev-REVIEW';
+      const typeIcon = { image:'🖼', video:'🎬', audio:'🔊', font:'🔤', stylesheet:'🎨', text:'📝', embed:'📺' }[issue.type] || '📎';
+      const title = issue.title || issue.issue || issue.category || 'Compliance issue';
+      const meta = issue.category || issue.domain || issue.src || issue.evidence || '';
+      const evidence = issue.src || issue.evidence || '';
       card.innerHTML = `
-        <div class="card-head" onclick="toggleCard('c-${i}','c-chev-${i}')">
-          <span class="sev-tag ${sevClass}">${issue.severity}</span>
-          <div>
-            <div class="card-title">${esc(issue.issue || 'Compliance Issue')}</div>
-            <div class="card-meta asset-url" title="${esc(issue.src || '')}">${esc(issue.domain || issue.src || '')}</div>
+        <div class="card-head" data-toggle-body="c-${i}" data-toggle-chev="c-chev-${i}" style="cursor:pointer">
+          <span class="sev-tag sev-${issue.severity}">${issue.severity}</span>
+          <div style="min-width:0;flex:1">
+            <div class="card-title-row">
+              <span style="font-size:9px;margin-right:4px">${typeIcon}</span>
+              <span class="card-title">${esc(title)}</span>
+            </div>
+            <div class="card-meta asset-url">${esc(meta)}</div>
           </div>
           <span class="chevron open" id="c-chev-${i}">&gt;</span>
         </div>
         <div class="card-body open" id="c-${i}">
-          <div class="body-sec">
-            <div class="sec-label">Resource</div>
-            <div class="body-text" style="word-break:break-all;font-size:9px">${esc(issue.src || '')}</div>
-          </div>
+          ${evidence ? `<div class="body-sec"><div class="sec-label">Evidence</div><div class="body-text" style="word-break:break-all;font-size:9px;color:var(--text-lo)">${esc(evidence)}</div></div>` : ''}
           ${issue.recommendation ? `<div class="body-sec"><div class="sec-label">Recommendation</div><div class="body-text fix-hint">${esc(issue.recommendation)}</div></div>` : ''}
         </div>
       `;
@@ -564,37 +589,25 @@ function renderComplianceResults(data) {
     });
   }
 
-  if (data.clean?.length > 0) {
+  if (data.clean?.length) {
     const cleanHeader = document.createElement('div');
     cleanHeader.className = 'section-header';
+    cleanHeader.id = 'clean-list-header';
     cleanHeader.style.cursor = 'pointer';
-    cleanHeader.innerHTML = `Licensed / Free Assets <span class="section-count">${data.clean.length}</span> <span style="font-size:8px;color:var(--text-lo)">(click to expand)</span>`;
-    cleanHeader.onclick = () => {
-      const cl = document.getElementById('clean-list');
-      if (cl) cl.style.display = cl.style.display === 'none' ? 'block' : 'none';
-    };
+    cleanHeader.innerHTML = `Clean Assets <span class="section-count">${data.clean.length}</span> (click to expand)`;
     out.appendChild(cleanHeader);
 
     const cleanList = document.createElement('div');
     cleanList.id = 'clean-list';
     cleanList.style.display = 'none';
-
     data.clean.forEach((item) => {
       const row = document.createElement('div');
-      row.style.cssText = 'padding:5px 12px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;';
-      const stClass = (item.status === 'free-source' || item.status === 'ok') ? 'st-free' : 'st-review';
-      row.innerHTML = `
-        <span class="asset-status ${stClass}">${item.status}</span>
-        <span style="font-size:9px;color:var(--text-lo);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(item.src)}">${esc(item.note || item.src)}</span>
-      `;
+      row.style.cssText = 'padding:5px 12px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;font-size:9px';
+      const typeIcon = { image:'🖼', video:'🎬', audio:'🔊', font:'🔤', stylesheet:'🎨', text:'📝', embed:'📺' }[item.type] || '📎';
+      row.innerHTML = `<span class="asset-status st-free">${item.status}</span><span>${typeIcon}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(item.note || item.src)}</span>`;
       cleanList.appendChild(row);
     });
-
     out.appendChild(cleanList);
-  }
-
-  if (!data.issues?.length && !data.clean?.length) {
-    out.innerHTML = '<div class="empty"><span class="empty-icon">©</span>No media assets found<br/>on this page to check</div>';
   }
 }
 
@@ -605,6 +618,25 @@ function toggleCard(bodyId, chevId) {
   if (!body) return;
   const open = body.classList.toggle('open');
   if (chev) chev.classList.toggle('open', open);
+}
+
+function switchInnerTab(cardIdx, tab, clickedBtn) {
+  const aPanel = document.getElementById(`s-${cardIdx}-analysis`);
+  const fPanel = document.getElementById(`s-${cardIdx}-fix`);
+  if (!aPanel || !fPanel) return;
+  const bodyDiv = document.getElementById(`s-${cardIdx}`);
+  bodyDiv?.querySelectorAll('.inner-tab').forEach(t => t.classList.remove('active'));
+  clickedBtn?.classList.add('active');
+  if (tab === 'analysis') { aPanel.style.display = ''; fPanel.style.display = 'none'; }
+  else { aPanel.style.display = 'none'; fPanel.style.display = ''; }
+}
+
+function copyFix(btn, code) {
+  navigator.clipboard.writeText(code).then(() => {
+    btn.textContent = 'Copied!';
+    btn.style.color = 'var(--green)';
+    setTimeout(() => { btn.textContent = 'Copy'; btn.style.color = ''; }, 1500);
+  });
 }
 
 function updateSummary(results) {
@@ -622,13 +654,16 @@ function updateSummary(results) {
 
 function setStatus(text, cls, pulse) {
   const el = document.getElementById('statusbar');
+  if (!el) return;
   el.className = 'statusbar' + (cls ? ' ' + cls : '');
   el.innerHTML = (pulse ? '<span class="dot"></span>' : '') + text;
 }
 
 function setBtnsDisabled(disabled) {
-  document.getElementById('btnScan').disabled = disabled;
-  document.getElementById('btnDeep').disabled = disabled;
+  ['btnScan', 'btnDeep', 'btnClear'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = disabled;
+  });
 }
 
 function scoreColor(s) {
@@ -638,10 +673,15 @@ function scoreColor(s) {
   return '#4a8a3a';
 }
 
+function scoreCompliance(issues) {
+  const weights = { CRITICAL: 20, HIGH: 15, MEDIUM: 9, LOW: 4, REVIEW: 5 };
+  const penalty = (issues || []).reduce((sum, issue) => {
+    const key = String(issue.severity || 'LOW').toUpperCase();
+    return sum + (weights[key] || 4);
+  }, 0);
+  return Math.max(0, Math.min(100, 100 - penalty));
+}
+
 function esc(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

@@ -1,0 +1,240 @@
+rules:
+  - id: autoshield-js-sql-injection-template-query
+    message: Possible SQL Injection using template literal in SQL query.
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              const $QUERY = `...${$INPUT}...`;
+          - pattern: |
+              let $QUERY = `...${$INPUT}...`;
+          - pattern: |
+              var $QUERY = `...${$INPUT}...`;
+          - pattern: |
+              $DB.get(`...${$INPUT}...`, ...);
+          - pattern: |
+              $DB.run(`...${$INPUT}...`, ...);
+          - pattern: |
+              $DB.query(`...${$INPUT}...`, ...);
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03: Injection"
+      category: "SQL Injection"
+
+  - id: autoshield-js-sql-injection-string-concat
+    message: Possible SQL Injection using string concatenation.
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              const $QUERY = "..." + $INPUT;
+          - pattern: |
+              let $QUERY = "..." + $INPUT;
+          - pattern: |
+              var $QUERY = "..." + $INPUT;
+          - pattern: |
+              $DB.get("..." + $INPUT, ...);
+          - pattern: |
+              $DB.run("..." + $INPUT, ...);
+          - pattern: |
+              $DB.query("..." + $INPUT, ...);
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03: Injection"
+      category: "SQL Injection"
+
+  - id: autoshield-js-command-injection-exec
+    message: Possible Command Injection using exec with dynamic input.
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              exec("..." + $INPUT, ...);
+          - pattern: |
+              exec(`...${$INPUT}...`, ...);
+          - pattern: |
+              child_process.exec("..." + $INPUT, ...);
+          - pattern: |
+              child_process.exec(`...${$INPUT}...`, ...);
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03: Injection"
+      category: "Command Injection"
+
+  - id: autoshield-js-dangerous-eval
+    message: Dangerous eval() usage detected.
+    severity: ERROR
+    languages:
+      - javascript
+    pattern: |
+      eval($CODE);
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03: Injection"
+      category: "Code Injection"
+
+  - id: autoshield-js-new-function
+    message: Dangerous Function constructor usage detected.
+    severity: ERROR
+    languages:
+      - javascript
+    pattern: |
+      new Function($CODE);
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03: Injection"
+      category: "Code Injection"
+
+  - id: autoshield-js-dom-xss-innerhtml
+    message: Possible DOM XSS through innerHTML assignment.
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      $ELEMENT.innerHTML = $VALUE;
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03: Injection"
+      category: "Cross-Site Scripting"
+
+  - id: autoshield-js-dom-xss-outerhtml
+    message: Possible DOM XSS through outerHTML assignment.
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      $ELEMENT.outerHTML = $VALUE;
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03: Injection"
+      category: "Cross-Site Scripting"
+
+  - id: autoshield-js-document-write
+    message: Possible XSS through document.write().
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      document.write($VALUE);
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03: Injection"
+      category: "Cross-Site Scripting"
+
+  - id: autoshield-js-hardcoded-secret
+    message: Hardcoded secret/API key/token detected.
+    severity: WARNING
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: const $NAME = "...";
+          - pattern: let $NAME = "...";
+          - pattern: var $NAME = "...";
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i).*(secret|api|key|token|jwt|password).*
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07: Identification and Authentication Failures"
+      category: "Hardcoded Secret"
+
+  - id: autoshield-js-weak-md5
+    message: Weak MD5 hashing detected.
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      crypto.createHash("md5")
+    metadata:
+      cwe: "CWE-327"
+      owasp: "A02: Cryptographic Failures"
+      category: "Weak Cryptography"
+
+  - id: autoshield-js-weak-sha1
+    message: Weak SHA1 hashing detected.
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      crypto.createHash("sha1")
+    metadata:
+      cwe: "CWE-327"
+      owasp: "A02: Cryptographic Failures"
+      category: "Weak Cryptography"
+
+  - id: autoshield-js-wildcard-cors
+    message: Insecure wildcard CORS configuration.
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      cors({ origin: "*" })
+    metadata:
+      cwe: "CWE-942"
+      owasp: "A05: Security Misconfiguration"
+      category: "Insecure CORS"
+
+  - id: autoshield-js-insecure-jwt-secret
+    message: Hardcoded JWT secret detected.
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              jwt.sign($PAYLOAD, "...", ...)
+          - pattern: |
+              jwt.verify($TOKEN, "...", ...)
+          - pattern: |
+              const JWT_SECRET = "...";
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07: Identification and Authentication Failures"
+      category: "Hardcoded JWT Secret"
+
+  - id: autoshield-js-path-traversal-sendfile
+    message: Possible path traversal through sendFile with user-controlled input.
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              res.sendFile($INPUT);
+          - pattern: |
+              res.download($INPUT);
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01: Broken Access Control"
+      category: "Path Traversal"
+
+  - id: autoshield-js-insecure-random
+    message: Insecure random value generation detected.
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      Math.random()
+    metadata:
+      cwe: "CWE-338"
+      owasp: "A02: Cryptographic Failures"
+      category: "Weak Randomness"
+
+  - id: autoshield-js-no-rate-limit-login
+    message: Login route appears to have no rate limiting.
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      app.post("/login", ...)
+    metadata:
+      cwe: "CWE-307"
+      owasp: "A07: Identification and Authentication Failures"
+      category: "Missing Rate Limiting"

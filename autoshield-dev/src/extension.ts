@@ -163,11 +163,34 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // ── Command: Apply Fix ────────────────────────────────────────
+    //
+    // SAFETY RULES (enforced in order):
+    //   1. result.success must be true AND result.validation.passed must be true
+    //   2. User must confirm in a modal dialog before any file is touched
+    //   3. Only the vulnerable line range is replaced — not the whole file
+    //   4. After apply, the file is saved and a fresh scan is triggered
+    //
+    // Direct auto-apply of raw LLM output is NOT allowed.
     const applyFixCommand = vscode.commands.registerCommand(
         'autoshield.applyFix',
-        async (args: { filePath: string; line: number; originalCode: string; fixCode: string }) => {
-            if (!args?.filePath || !args?.fixCode) {
-                vscode.window.showErrorMessage('AutoShield: Missing fix data.');
+        async (args: {
+            filePath: string;
+            line: number;
+            originalCode: string;
+            fixCode: string;
+            validationPassed?: boolean;
+        }) => {
+            if (!args?.fixCode) {
+                vscode.window.showErrorMessage('AutoShield: No fix code to apply.');
+                return;
+            }
+
+            // ── Guard: reject if validation did not pass ──────────────
+            if (args.validationPassed !== true) {
+                vscode.window.showErrorMessage(
+                    'AutoShield: This fix was not validated by the backend. No code was changed. ' +
+                    'Use "Regenerate" to request a new patch.'
+                );
                 return;
             }
 
@@ -176,12 +199,17 @@ export function activate(context: vscode.ExtensionContext) {
             const resolvedPath = _resolveFilePath(args.filePath, projectPath);
 
             if (!resolvedPath) {
-                vscode.window.showErrorMessage(`AutoShield: Cannot resolve file path: ${args.filePath}`);
+                vscode.window.showErrorMessage(
+                    `AutoShield: Cannot resolve file path: ${args.filePath}`
+                );
                 return;
             }
 
+            // ── Confirmation dialog ───────────────────────────────────
+            const fileName = resolvedPath.split(/[\\/]/).pop() ?? resolvedPath;
+            const validBadge = args.validationPassed === true ? '✅ Validated' : '⚠️ Unverified';
             const confirm = await vscode.window.showWarningMessage(
-                `Apply AI-generated fix to ${resolvedPath.split('/').pop()}?`,
+                `Apply AutoShield fix to ${fileName}? (${validBadge})`,
                 { modal: true },
                 'Apply Fix',
                 'Cancel'
@@ -189,26 +217,48 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (confirm !== 'Apply Fix') { return; }
 
+            // ── Apply via editor.edit on the exact line range ─────────
             try {
-                const response = await axios.post(`${BACKEND}/apply-fix`, {
-                    file_path: resolvedPath,
-                    line: args.line,
-                    original_code: args.originalCode,
-                    fix_code: args.fixCode,
+                const uri = vscode.Uri.file(resolvedPath);
+                const doc  = await vscode.workspace.openTextDocument(uri);
+                const editor = await vscode.window.showTextDocument(doc);
+
+                // Build the range covering the vulnerable snippet.
+                // args.line is 1-indexed; we replace from that line to
+                // (line + number-of-lines-in-originalCode - 1).
+                const startLine = Math.max(0, (args.line || 1) - 1);
+                const originalLines = (args.originalCode || '').split('\n').length;
+                const endLine   = Math.min(
+                    doc.lineCount - 1,
+                    startLine + originalLines - 1
+                );
+                const endChar   = doc.lineAt(endLine).text.length;
+
+                const range = new vscode.Range(
+                    new vscode.Position(startLine, 0),
+                    new vscode.Position(endLine, endChar)
+                );
+
+                // Apply ONLY the validated fixed_code — never the raw LLM response
+                const applied = await editor.edit(editBuilder => {
+                    editBuilder.replace(range, args.fixCode.trim());
                 });
 
-                if (response.data.success) {
-                    vscode.window.showInformationMessage(
-                        `✅ Fix applied to ${resolvedPath.split('/').pop()}`
-                    );
-                    const uri = vscode.Uri.file(resolvedPath);
-                    const doc = await vscode.workspace.openTextDocument(uri);
-                    await vscode.window.showTextDocument(doc);
-                    vscode.commands.executeCommand('autoshield.scan');
+                if (!applied) {
+                    vscode.window.showErrorMessage('AutoShield: editor.edit failed — no changes made.');
+                    return;
                 }
+
+                // Save and re-scan so diagnostic squiggles update
+                await doc.save();
+                vscode.window.showInformationMessage(
+                    `✅ AutoShield fix applied to ${fileName}. Re-scanning…`
+                );
+                vscode.commands.executeCommand('autoshield.scan');
+
             } catch (error: any) {
                 vscode.window.showErrorMessage(
-                    `Failed to apply fix: ${error?.response?.data?.detail ?? error.message}`
+                    `AutoShield: Failed to apply fix — ${error.message}`
                 );
             }
         }
@@ -248,7 +298,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // ── Command: Generate Fix (calls Gemini) ─────────────────────
+    // ── Command: Generate Validated Fix (Safe Fix Generator pipeline) ──
     const generateFixCommand = vscode.commands.registerCommand(
         'autoshield.generateFix',
         async (args: { codeSnippet: string; vulnType: string; cweId: string; findingIndex: number }) => {
@@ -257,20 +307,54 @@ export function activate(context: vscode.ExtensionContext) {
             sidebarProvider.postMessage({ type: 'fixGenerating', findingIndex: args.findingIndex });
 
             try {
-                const response = await axios.post(`${BACKEND}/rag/generate-fix`, {
-                    code_snippet: args.codeSnippet,
-                    vuln_type: args.vulnType,
-                    cwe_id: args.cweId,
+                // NEW: calls /api/generate-fix — validated pipeline with PatchValidator + retry
+                const response = await axios.post(`${BACKEND}/api/generate-fix`, {
+                    language: _detectLanguageFromCode(args.codeSnippet),
+                    vulnerability_type: args.vulnType || 'Unknown',
+                    code: args.codeSnippet,
+                    query: args.vulnType || args.cweId || '',
+                }, {
+                    timeout: 30000,
                 });
 
                 sidebarProvider.postMessage({
                     type: 'fixGenerated',
                     findingIndex: args.findingIndex,
-                    fixData: response.data,
+                    fixData: response.data,   // { success, fixed_code, validation, attempts }
                 });
             } catch (error: any) {
                 sidebarProvider.postMessage({
                     type: 'fixError',
+                    findingIndex: args.findingIndex,
+                    error: error?.response?.data?.detail ?? error.message,
+                });
+            }
+        }
+    );
+
+    // ── Command: Learn About This Issue ──────────────────────────
+    const learnCommand = vscode.commands.registerCommand(
+        'autoshield.learnAboutIssue',
+        async (args: { vulnType: string; cweId: string; codeSnippet: string; findingIndex: number }) => {
+            if (!args?.vulnType) { return; }
+
+            sidebarProvider.postMessage({ type: 'learnLoading', findingIndex: args.findingIndex });
+
+            try {
+                const response = await axios.post(`${BACKEND}/api/explain-vulnerability`, {
+                    vulnerability_type: args.vulnType,
+                    cwe_id: args.cweId || '',
+                    code: args.codeSnippet || '',
+                });
+
+                sidebarProvider.postMessage({
+                    type: 'learnLoaded',
+                    findingIndex: args.findingIndex,
+                    explainData: response.data,
+                });
+            } catch (error: any) {
+                sidebarProvider.postMessage({
+                    type: 'learnError',
                     findingIndex: args.findingIndex,
                     error: error?.response?.data?.detail ?? error.message,
                 });
@@ -291,12 +375,29 @@ export function activate(context: vscode.ExtensionContext) {
         applyFixCommand,
         jumpToCommand,
         generateFixCommand,
+        learnCommand,
         clearCommand,
         diagnosticCollection,
     );
 }
 
 export function deactivate() {}
+
+// ── Extra helpers ──────────────────────────────────────────────────
+
+/**
+ * Heuristic language detector for the validated fix pipeline.
+ * Falls back to 'python' if unsure — the validator will skip syntax
+ * checks for unknown languages rather than fail.
+ */
+function _detectLanguageFromCode(code: string): string {
+    if (/^\s*(def |import |from |class |if __name__)/m.test(code)) { return 'python'; }
+    if (/\b(document|window|HTMLElement|innerHTML|outerHTML|textContent|getElementById|querySelector)\b/.test(code)) { return 'javascript'; }
+    if (/^\s*(const |let |var |function |=>|require\()/m.test(code)) { return 'javascript'; }
+    if (/^\s*(interface |type |: string|: number|: boolean)/m.test(code)) { return 'typescript'; }
+    if (/^\s*(public |private |class |void |@Override)/m.test(code)) { return 'java'; }
+    return 'python'; // safe default
+}
 
 // ── Helpers ────────────────────────────────────────────────────────
 

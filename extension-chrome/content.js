@@ -15,7 +15,8 @@
         chrome.runtime.sendMessage({
           source: 'autoshield-content',
           type: 'pageDataExtracted',
-          data
+          data,
+          useLLM: !!msg.useLLM
         });
         sendResponse({ ok: true });
       } catch (e) {

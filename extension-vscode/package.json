@@ -1,0 +1,99 @@
+{
+  "name": "autoshield-dev",
+  "displayName": "AutoShield DevAgent",
+  "description": "Tri-layer security analysis: Static + RAG + LLM reasoning with Gemini",
+  "version": "2.1.0",
+  "engines": {
+    "vscode": "^1.109.0"
+  },
+  "categories": [
+    "Other",
+    "Linters"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "autoshield-sidebar",
+          "title": "AutoShield"
+        }
+      ]
+    },
+    "views": {
+      "autoshield-sidebar": [
+        {
+          "type": "webview",
+          "id": "autoshield.view",
+          "name": "Security Analysis"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "autoshield.scan",
+        "title": "AutoShield: Full Scan (Static + RAG + LLM)"
+      },
+      {
+        "command": "autoshield.analyzeSelection",
+        "title": "AutoShield: Analyze Selected Code"
+      },
+      {
+        "command": "autoshield.clear",
+        "title": "AutoShield: Clear Results"
+      },
+      {
+        "command": "autoshield.applyFix",
+        "title": "AutoShield: Apply AI Fix"
+      },
+      {
+        "command": "autoshield.jumpToLine",
+        "title": "AutoShield: Jump to Vulnerability"
+      },
+      {
+        "command": "autoshield.generateFix",
+        "title": "AutoShield: Generate Fix with Gemini"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "autoshield.analyzeSelection",
+          "when": "editorHasSelection",
+          "group": "autoshield"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "autoshield.scan",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.19.17",
+    "@types/vscode": "^1.109.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.54.0"
+  },
+  "dependencies": {
+    "axios": "^1.13.5"
+  }
+}

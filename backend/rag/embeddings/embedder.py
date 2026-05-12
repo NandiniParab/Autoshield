@@ -3,9 +3,13 @@
 # Toggle via config.USE_LOCAL_EMBEDDINGS
 
 import time
+import os
 from typing import List
 
 from rag.config import config
+
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 # -----------------------------
 # LOCAL EMBEDDINGS (FREE)
