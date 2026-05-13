@@ -1,5 +1,5 @@
 // sidepanel.js
-// AutoShield Side Panel — UI logic, backend communication, rendering
+// AutoShield Side Panel - UI logic, backend communication, rendering
 // CSP COMPLIANT (Manifest V3)
 
 const BACKEND = 'http://127.0.0.1:8000';
@@ -8,6 +8,8 @@ const BACKEND = 'http://127.0.0.1:8000';
 let currentTab = 'security';
 let securityResults = [];
 let complianceResults = null;
+let runtimeResults = null;
+let lastReport = null;
 let currentUrl = '';
 let port = null;
 let isScanning = false;
@@ -15,9 +17,11 @@ let isScanning = false;
 // ─── Init ────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   // Static buttons
-  document.getElementById("btnScan")?.addEventListener("click", runScan);
-  document.getElementById("btnDeep")?.addEventListener("click", runDeepScan);
+  document.getElementById("btnRuntime")?.addEventListener("click", runRuntimeScan);
+  document.getElementById("btnMediaCompliance")?.addEventListener("click", runMediaComplianceFromPanel);
   document.getElementById("btnClear")?.addEventListener("click", clearAll);
+  document.getElementById("exportJsonBtn")?.addEventListener("click", () => exportReport("json"));
+  document.getElementById("exportHtmlBtn")?.addEventListener("click", () => exportReport("html"));
 
   // Tab buttons
   document.getElementById("tab-security")?.addEventListener("click", () => switchTab('security'));
@@ -72,7 +76,7 @@ function logStep(message) {
   const logDiv = document.getElementById("log");
   if (!logDiv) return;
   const entry = document.createElement("div");
-  entry.textContent = "• " + message;
+  entry.textContent = "- " + message;
   entry.style.fontSize = "10px";
   entry.style.color = "#aaa";
   logDiv.appendChild(entry);
@@ -116,14 +120,14 @@ async function runScan() {
   if (isScanning) { return; }
   getCurrentTabUrl();
   setStatus('Extracting page data...', 'scanning', true);
-  logStep('🚀 Scan initiated');
+  logStep('Scan initiated');
   setBtnsDisabled(true);
   isScanning = true;
 
   if (port) {
     port.postMessage({ type: 'triggerExtraction', useLLM: false });
   } else {
-    setStatus('Extension connection lost — refresh the panel', 'error');
+    setStatus('Extension connection lost - refresh the panel', 'error');
     setBtnsDisabled(false);
     isScanning = false;
   }
@@ -139,7 +143,7 @@ async function runDeepScan() {
   }
 
   setStatus('Running deep scan (LLM enabled)...', 'scanning', true);
-  logStep('🧠 Deep scan with LLM reasoning');
+  logStep('Deep scan with LLM reasoning');
   setBtnsDisabled(true);
   isScanning = true;
 
@@ -158,11 +162,49 @@ async function runDeepScan() {
   }
 }
 
+async function runRuntimeScan() {
+  if (isScanning) { return; }
+  switchTab('security');
+  getCurrentTabUrl();
+  setStatus('Running runtime browser scan...', 'scanning', true);
+  logStep('Runtime scan initiated');
+  setBtnsDisabled(true);
+  isScanning = true;
+
+  if (port) {
+    port.postMessage({ type: 'RUN_RUNTIME_SCAN' });
+  } else {
+    setStatus('Extension connection lost - refresh the panel', 'error');
+    setBtnsDisabled(false);
+    isScanning = false;
+  }
+}
+
+async function runMediaComplianceFromPanel() {
+  if (isScanning) { return; }
+  switchTab('compliance');
+  getCurrentTabUrl();
+  setStatus('Running media compliance scan...', 'scanning', true);
+  logStep('Media compliance scan initiated');
+  setBtnsDisabled(true);
+  isScanning = true;
+
+  if (port) {
+    port.postMessage({ type: 'RUN_MEDIA_COMPLIANCE_SCAN' });
+  } else {
+    setStatus('Extension connection lost - refresh the panel', 'error');
+    setBtnsDisabled(false);
+    isScanning = false;
+  }
+}
+
 function clearAll() {
   securityResults = [];
   complianceResults = null;
-  document.getElementById('security-out').innerHTML = '<div class="empty"><span class="empty-icon">🔒</span>Click <strong>[Scan]</strong> to analyze<br/>the current page for<br/>security vulnerabilities</div>';
-  document.getElementById('compliance-out').innerHTML = '<div class="empty"><span class="empty-icon">©</span>Click <strong>[Scan]</strong> to check<br/>media assets for<br/>copyright &amp; compliance</div>';
+  runtimeResults = null;
+  lastReport = null;
+  document.getElementById('security-out').innerHTML = '<div class="empty"><span class="empty-icon">Locked</span>Click <strong>[Runtime Scan]</strong> to analyze<br/>the current page for<br/>security vulnerabilities</div>';
+  document.getElementById('compliance-out').innerHTML = '<div class="empty"><span class="empty-icon">Check</span>Click <strong>[Media Compliance]</strong> to check<br/>media assets for<br/>copyright &amp; compliance</div>';
   document.getElementById('summary').classList.remove('visible');
   const logDiv = document.getElementById('log');
   if (logDiv) logDiv.innerHTML = '';
@@ -175,7 +217,7 @@ function handleBackgroundMessage(msg) {
     logStep(msg.step);
   }
   if (msg.type === 'pageDataExtracted') {
-    logStep('📦 Data received from page');
+    logStep('Data received from page');
     setStatus('Analyzing with RAG + AI...', 'scanning', true);
     analyzePageData(msg.data, msg.useLLM || false);
   }
@@ -184,11 +226,44 @@ function handleBackgroundMessage(msg) {
     setBtnsDisabled(false);
     isScanning = false;
   }
+  if (msg.type === 'runtimeScanResult') {
+    runtimeResults = msg.result;
+    renderRuntimeResults(runtimeResults);
+    updateRuntimeSummary(runtimeResults);
+    const normalizedRuntime = normalizeRuntimeGraphResult(runtimeResults || {});
+    setStatus(`Runtime scan done - ${normalizedRuntime.issues_count || normalizedRuntime.total_findings || 0} issue(s)`, 'done');
+    logStep('Runtime scan complete');
+    setBtnsDisabled(false);
+    isScanning = false;
+    switchTab('security');
+  }
+  if (msg.type === 'runtimeScanError') {
+    setStatus('Runtime scan failed: ' + msg.error, 'error');
+    logStep('Runtime scan failed: ' + msg.error);
+    setBtnsDisabled(false);
+    isScanning = false;
+  }
+  if (msg.type === 'mediaComplianceResult') {
+    const report = msg.report || {};
+    renderMediaComplianceReport(report);
+    updateMediaComplianceSummary(report);
+    setStatus(`Media compliance done - ${(report.issues || []).length} issue(s)`, 'done');
+    logStep('Media compliance scan complete');
+    setBtnsDisabled(false);
+    isScanning = false;
+    switchTab('compliance');
+  }
+  if (msg.type === 'mediaComplianceError') {
+    setStatus('Media compliance scan failed: ' + msg.error, 'error');
+    logStep('Media compliance scan failed: ' + msg.error);
+    setBtnsDisabled(false);
+    isScanning = false;
+  }
 }
 
 // ─── Main Analysis ────────────────────────────────────────────────────
 async function analyzePageData(pageData, useLLM = false) {
-  logStep('🧠 Running AI analysis...');
+  logStep('Running AI analysis...');
   try {
     const [secResult, compResult] = await Promise.allSettled([
       analyzeSecurityData(pageData, useLLM),
@@ -207,14 +282,14 @@ async function analyzePageData(pageData, useLLM = false) {
 
     const totalSec = securityResults.length;
     const totalComp = complianceResults?.issues?.length || 0;
-    logStep('✅ Scan complete');
-    setStatus(`Done — ${totalSec} security + ${totalComp} compliance findings`, 'done');
+    logStep('Scan complete');
+    setStatus(`Done - ${totalSec} security + ${totalComp} compliance findings`, 'done');
     updateSummary(securityResults);
     setBtnsDisabled(false);
     isScanning = false;
 
   } catch (e) {
-    logStep('❌ Analysis failed: ' + e.message);
+    logStep('Analysis failed: ' + e.message);
     setStatus('Analysis error: ' + e.message, 'error');
     setBtnsDisabled(false);
     isScanning = false;
@@ -279,7 +354,7 @@ function buildFallbackResult(finding) {
     risk_category: finding.severity ? finding.severity.toUpperCase() : 'MEDIUM',
     risk_score: finding.severity === 'critical' ? 90 : finding.severity === 'high' ? 70 : finding.severity === 'medium' ? 45 : 20,
     owasp_category: '',
-    reasoning: 'Backend is offline — showing local static analysis only.',
+    reasoning: 'Backend is offline - showing local static analysis only.',
     recommended_fix: q.fix,
     fix_code: q.code,
     key_risks: [],
@@ -356,11 +431,11 @@ async function analyzeComplianceData(pageData) {
       if (data.summary && !data.summary.copyrightText) {
         data.summary.copyrightText = (comp.licenseIndicators || {}).copyrightText || '';
       }
-      logStep('🤖 Compliance: LLM backend used');
+      logStep('Compliance: LLM backend used');
       return data;
     }
   } catch (_) {
-    logStep('⚠ Compliance backend unreachable — using client-side fallback');
+    logStep('Compliance backend unreachable - using client-side fallback');
   }
 
   const issues = [];
@@ -394,27 +469,27 @@ async function analyzeComplianceData(pageData) {
     if (!img.src || img.src.startsWith('data:')) return;
     if (img.isExternal)
       issues.push({ type: 'image', src: img.src, domain: img.domain || '', severity: 'REVIEW',
-        issue: 'External image — license unknown',
+        issue: 'External image - license unknown',
         recommendation: 'Verify you have rights to use this image or host it locally.' });
   });
 
   comp.videos?.forEach((v) => {
     if (v.src && v.isExternal)
       issues.push({ type: 'video', src: v.src, domain: v.domain || '', severity: 'REVIEW',
-        issue: 'External video resource — license unknown',
+        issue: 'External video resource - license unknown',
         recommendation: 'Verify licensing or use an official embed player.' });
   });
 
   comp.audios?.forEach((a) => {
     if (a.src && a.isExternal)
       issues.push({ type: 'audio', src: a.src, domain: a.domain || '', severity: 'REVIEW',
-        issue: 'External audio resource — license unknown',
+        issue: 'External audio resource - license unknown',
         recommendation: 'Verify licensing before using this audio.' });
   });
 
   comp.iframeEmbeds?.forEach((frame) => {
     if (frame.isYouTube || frame.isVimeo || frame.isSpotify || frame.isSoundCloud)
-      clean.push({ type: 'embed', src: frame.src, status: 'ok', note: 'Official platform embed — generally OK' });
+      clean.push({ type: 'embed', src: frame.src, status: 'ok', note: 'Official platform embed - generally OK' });
   });
 
   comp.fonts?.forEach((f) => {
@@ -436,7 +511,7 @@ async function analyzeComplianceData(pageData) {
 function renderSecurityResults(results) {
   const out = document.getElementById('security-out');
   if (!results || results.length === 0) {
-    out.innerHTML = '<div class="empty"><span class="empty-icon">✅</span>No security issues detected<br/>on this page</div>';
+    out.innerHTML = '<div class="empty"><span class="empty-icon">Clear</span>No security issues detected<br/>on this page</div>';
     return;
   }
 
@@ -470,12 +545,12 @@ function renderSecurityResults(results) {
       <div style="min-width:0;flex:1">
         <div class="card-title-row">
           <span class="card-title">${esc(r.vuln_type || r.cwe_id || 'Unknown')}</span>
-          ${hasFix ? `<span class="fix-pill">✦ Fix</span>` : ''}
-          ${usedLLM ? `<span class="llm-pill">⚡ LLM</span>` : ''}
+          ${hasFix ? `<span class="fix-pill">Fix</span>` : ''}
+          ${usedLLM ? `<span class="llm-pill">LLM</span>` : ''}
         </div>
         <div class="card-meta">
-          ${esc(r.cwe_id || '')}${r._original?.location ? ' · ' + esc(r._original.location) : ''}
-          ${r.owasp_category && r.owasp_category !== 'Unknown' ? ' · ' + esc(r.owasp_category) : ''}
+          ${esc(r.cwe_id || '')}${r._original?.location ? ' - ' + esc(r._original.location) : ''}
+          ${r.owasp_category && r.owasp_category !== 'Unknown' ? ' - ' + esc(r.owasp_category) : ''}
         </div>
         <div class="score-row">
           <div class="score-track"><div class="score-fill" style="width:${score}%;background:${scoreColor(score)}"></div></div>
@@ -492,7 +567,7 @@ function renderSecurityResults(results) {
       bodyDiv.className = 'card-body open';
 
       if (r._fallback && !r.recommended_fix) {
-        bodyDiv.innerHTML = `<div class="body-sec offline-note">⚠ Backend offline — start your FastAPI server.</div>`;
+        bodyDiv.innerHTML = `<div class="body-sec offline-note">Backend offline - start your FastAPI server.</div>`;
       } else if (hasFix && hasAnalysis) {
         bodyDiv.innerHTML = `
           <div class="inner-tabs">
@@ -542,11 +617,11 @@ function renderComplianceResults(data) {
   const s = data.summary || {};
   const bannerParts = [];
   if (data.compliance_score !== undefined) bannerParts.push(`<div style="color:var(--text-dim)">Score: ${esc(data.compliance_score)}/100</div>`);
-  if (s.copyrightText)        bannerParts.push(`<div style="color:var(--text-dim)">📄 ${esc(s.copyrightText)}</div>`);
-  if (s.paid_stock_warnings > 0) bannerParts.push(`<div style="color:#cc7700">⚠ ${s.paid_stock_warnings} potential paid stock source(s)</div>`);
-  if (s.free_assets > 0)     bannerParts.push(`<div style="color:var(--green)">✓ ${s.free_assets} asset(s) from known free sources</div>`);
-  if (s.total_assets > 0)    bannerParts.push(`<div style="color:var(--text-lo)">📦 ${s.total_assets} total asset(s) scanned</div>`);
-  if (data.llm_used)         bannerParts.push(`<div style="color:var(--blue)">⚡ LLM-powered analysis</div>`);
+  if (s.copyrightText)        bannerParts.push(`<div style="color:var(--text-dim)">${esc(s.copyrightText)}</div>`);
+  if (s.paid_stock_warnings > 0) bannerParts.push(`<div style="color:#cc7700">${s.paid_stock_warnings} potential paid stock source(s)</div>`);
+  if (s.free_assets > 0)     bannerParts.push(`<div style="color:var(--green)">${s.free_assets} asset(s) from known free sources</div>`);
+  if (s.total_assets > 0)    bannerParts.push(`<div style="color:var(--text-lo)">${s.total_assets} total asset(s) scanned</div>`);
+  if (data.llm_used)         bannerParts.push(`<div style="color:var(--blue)">LLM-powered analysis</div>`);
 
   if (bannerParts.length) {
     const banner = document.createElement('div');
@@ -564,7 +639,7 @@ function renderComplianceResults(data) {
     data.issues.forEach((issue, i) => {
       const card = document.createElement('div');
       card.className = 'card';
-      const typeIcon = { image:'🖼', video:'🎬', audio:'🔊', font:'🔤', stylesheet:'🎨', text:'📝', embed:'📺' }[issue.type] || '📎';
+      const typeIcon = { image:'IMG', video:'VID', audio:'AUD', font:'FONT', stylesheet:'CSS', text:'TXT', embed:'EMBED' }[issue.type] || 'ASSET';
       const title = issue.title || issue.issue || issue.category || 'Compliance issue';
       const meta = issue.category || issue.domain || issue.src || issue.evidence || '';
       const evidence = issue.src || issue.evidence || '';
@@ -603,7 +678,7 @@ function renderComplianceResults(data) {
     data.clean.forEach((item) => {
       const row = document.createElement('div');
       row.style.cssText = 'padding:5px 12px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;font-size:9px';
-      const typeIcon = { image:'🖼', video:'🎬', audio:'🔊', font:'🔤', stylesheet:'🎨', text:'📝', embed:'📺' }[item.type] || '📎';
+      const typeIcon = { image:'IMG', video:'VID', audio:'AUD', font:'FONT', stylesheet:'CSS', text:'TXT', embed:'EMBED' }[item.type] || 'ASSET';
       row.innerHTML = `<span class="asset-status st-free">${item.status}</span><span>${typeIcon}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(item.note || item.src)}</span>`;
       cleanList.appendChild(row);
     });
@@ -612,6 +687,443 @@ function renderComplianceResults(data) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
+function riskLevelFromScore(score) {
+  const n = Number(score);
+  if (Number.isNaN(n)) return 'UNKNOWN';
+  if (n >= 85) return 'LOW';
+  if (n >= 60) return 'MEDIUM';
+  if (n >= 35) return 'HIGH';
+  return 'CRITICAL';
+}
+
+function riskLevelClass(level) {
+  return String(level || 'unknown').toLowerCase().replace(/[^a-z]/g, '');
+}
+
+function renderSummaryObject(values, emptyText) {
+  const entries = Object.entries(values || {});
+  if (!entries.length) return `<li class="summary-muted">${esc(emptyText || 'No data')}</li>`;
+  return entries.map(([name, count]) => `<li>${esc(name)}: ${esc(count)}</li>`).join('');
+}
+
+function renderTopIssues(issues) {
+  if (!issues || issues.length === 0) {
+    return '<li class="summary-muted">No top issues reported</li>';
+  }
+  return issues.map((issue, index) => `
+    <li>${index + 1}. <b>${esc(issue.category || 'Security Issue')}</b> - ${esc(issue.severity || '')}</li>
+  `).join('');
+}
+
+function renderRemediationPlan(plan) {
+  if (!plan || plan.length === 0) {
+    return '<li class="summary-muted">No remediation plan available</li>';
+  }
+  return plan.map((item) => `
+    <li><b>${esc(item.priority || '')}</b> - ${esc(item.category || 'Security Issue')}<br>${esc(item.action || '')}</li>
+  `).join('');
+}
+
+function renderExecutiveSummary(report, title = 'Runtime Risk Summary') {
+  const score = report.overall_risk_score ?? report.runtime_score ?? 'N/A';
+  const level = report.overall_risk_level || riskLevelFromScore(score);
+  const total = report.total_findings ?? report.issues_count ?? 0;
+  const confidence = report.confidence_summary || report.summary || {};
+  const grouped = report.grouped_summary || {};
+  const bySource = grouped.by_source || {};
+  const byCategory = grouped.by_category || {};
+
+  return `
+    <div class="summary-card">
+      <h2>${esc(title)}</h2>
+      <div class="risk-score">
+        <div class="score">${esc(score)}/100</div>
+        <div class="level ${esc(riskLevelClass(level))}">${esc(level)}</div>
+      </div>
+      <div class="summary-grid">
+        <div><b>Total</b>${esc(total)}</div>
+        <div><b>High</b>${esc(confidence.high || 0)}</div>
+        <div><b>Medium</b>${esc(confidence.medium || 0)}</div>
+        <div><b>Low</b>${esc(confidence.low || 0)}</div>
+      </div>
+      <div class="summary-section">
+        <h3>Findings by Source</h3>
+        <ul class="summary-list">${renderSummaryObject(bySource, 'No source grouping')}</ul>
+      </div>
+      <div class="summary-section">
+        <h3>Findings by Category</h3>
+        <ul class="summary-list">${renderSummaryObject(byCategory, 'No category grouping')}</ul>
+      </div>
+      <div class="summary-section">
+        <h3>Top Issues</h3>
+        <ul class="summary-list">${renderTopIssues(report.top_issues || [])}</ul>
+      </div>
+      <div class="summary-section">
+        <h3>Remediation Plan</h3>
+        <ul class="summary-list">${renderRemediationPlan(report.remediation_plan || [])}</ul>
+      </div>
+    </div>
+  `;
+}
+
+async function exportReport(format) {
+  if (!lastReport) {
+    setStatus('No report available to export.', 'error');
+    return;
+  }
+
+  let content = '';
+  let mime = '';
+  let filename = '';
+
+  if (format === 'json') {
+    content = JSON.stringify(lastReport, null, 2);
+    mime = 'application/json';
+    filename = 'autoshield-runtime-report.json';
+  } else {
+    try {
+      const response = await fetch(`${BACKEND}/api/report/export`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          format: 'html',
+          report: lastReport,
+        }),
+      });
+
+      if (!response.ok) {
+        setStatus('Failed to export HTML report.', 'error');
+        return;
+      }
+
+      content = await response.text();
+      mime = 'text/html';
+      filename = 'autoshield-runtime-report.html';
+    } catch (e) {
+      setStatus('Failed to export HTML report: ' + e.message, 'error');
+      return;
+    }
+  }
+
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+
+  chrome.downloads.download({
+    url,
+    filename,
+    saveAs: true,
+  }, () => {
+    if (chrome.runtime.lastError) {
+      setStatus('Export failed: ' + chrome.runtime.lastError.message, 'error');
+    } else {
+      setStatus(`Exported ${format.toUpperCase()} report.`, 'done');
+    }
+  });
+
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function renderRuntimeResults(data) {
+  const out = document.getElementById('security-out');
+  if (!data) {
+    out.innerHTML = '<div class="empty">No runtime data</div>';
+    return;
+  }
+
+  const normalized = normalizeRuntimeGraphResult(data);
+  lastReport = normalized;
+  out.innerHTML = renderExecutiveSummary(normalized, 'Runtime Risk Summary');
+
+  const grouped = groupRuntimeIssues(normalized.issues || []);
+  ['HIGH', 'MEDIUM', 'LOW'].forEach((severity) => {
+    const issues = grouped[severity] || [];
+    if (!issues.length) return;
+
+    const header = document.createElement('div');
+    header.className = 'section-header';
+    header.innerHTML = `${severity} <span class="section-count">${issues.length}</span>`;
+    out.appendChild(header);
+
+    issues.forEach((issue, index) => {
+      const id = `rt-${severity}-${index}`;
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `
+        <div class="card-head" data-toggle-body="${id}" data-toggle-chev="${id}-chev" style="cursor:pointer">
+          <span class="sev-tag sev-${severity}">${severity}</span>
+          <div style="min-width:0;flex:1">
+            <div class="card-title-row">
+              <span class="card-title">${esc(issue.title || 'Runtime issue')}</span>
+            </div>
+            <div class="card-meta">${esc(issue.category || '')} ${issue.cwe ? '&middot; ' + esc(issue.cwe) : ''}</div>
+          </div>
+          <span class="chevron open" id="${id}-chev">&gt;</span>
+        </div>
+        <div class="card-body open" id="${id}">
+          ${issue.evidence ? `<div class="body-sec"><div class="sec-label">Evidence</div><div class="body-text" style="word-break:break-all;font-size:9px;color:var(--text-lo)">${esc(issue.evidence)}</div></div>` : ''}
+          ${issue.owasp ? `<div class="body-sec"><div class="sec-label">OWASP</div><div class="body-text">${esc(issue.owasp)}</div></div>` : ''}
+          ${issue.recommendation ? `<div class="body-sec"><div class="sec-label">Recommendation</div><div class="body-text fix-hint">${esc(issue.recommendation)}</div></div>` : ''}
+        </div>
+      `;
+      out.appendChild(card);
+    });
+  });
+
+  if (!normalized.issues?.length) {
+    out.innerHTML += '<div class="empty"><span class="empty-icon">OK</span>No runtime issues detected</div>';
+  }
+}
+
+function normalizeMediaComplianceReport(report) {
+  const issues = report.issues || [];
+  const summary = issues.reduce((acc, issue) => {
+    const severity = String(issue.severity || 'LOW').toLowerCase();
+    if (acc[severity] !== undefined) acc[severity] += 1;
+    return acc;
+  }, { high: 0, medium: 0, low: 0 });
+
+  const byCategory = issues.reduce((acc, issue) => {
+    const category = issue.category || 'Media Compliance';
+    acc[category] = (acc[category] || 0) + 1;
+    return acc;
+  }, {});
+
+  const findings = issues.map((issue, index) => ({
+    tool: 'live-media-compliance',
+    rule_id: `live-media-compliance-${index + 1}`,
+    message: issue.title || 'Media compliance issue',
+    severity: issue.severity || 'LOW',
+    file: issue.file || report.page_url || 'media',
+    file_path: issue.file || report.page_url || 'media',
+    line: 1,
+    column: 1,
+    cwe: 'CWE-Unknown',
+    cwe_id: 'CWE-Unknown',
+    owasp: 'Compliance',
+    category: issue.category || 'Media Compliance',
+    code_snippet: issue.evidence || '',
+    recommendation: issue.recommendation || '',
+    validation: {
+      confidence: issue.severity === 'HIGH' ? 'HIGH' : issue.severity === 'MEDIUM' ? 'MEDIUM' : 'LOW',
+    },
+    explanation: [
+      issue.evidence ? `Evidence: ${issue.evidence}` : '',
+      issue.recommendation ? `Recommendation: ${issue.recommendation}` : '',
+      issue.matches ? `Matches: ${issue.matches.slice(0, 5).join(', ')}` : '',
+    ].filter(Boolean).join('\n\n'),
+    raw: issue,
+  }));
+
+  return {
+    ...report,
+    runtime_url: report.page_url || currentUrl,
+    overall_risk_score: report.compliance_score ?? 100,
+    overall_risk_level: report.risk_level || 'LOW',
+    total_findings: issues.length,
+    confidence_summary: summary,
+    grouped_summary: {
+      by_source: { 'live-media-compliance': issues.length },
+      by_confidence: {
+        HIGH: summary.high,
+        MEDIUM: summary.medium,
+        LOW: summary.low,
+      },
+      by_category: byCategory,
+    },
+    top_issues: findings.slice(0, 5).map((finding) => ({
+      category: finding.category,
+      message: finding.message,
+      severity: finding.severity,
+      confidence: finding.validation.confidence,
+      file: finding.file,
+      line: finding.line,
+      cwe: finding.cwe,
+      owasp: finding.owasp,
+    })),
+    remediation_plan: findings.length
+      ? findings.slice(0, 5).map((finding) => ({
+        priority: finding.severity === 'HIGH' ? 'P0' : 'P1',
+        category: finding.category,
+        action: finding.recommendation || 'Verify media ownership, license, attribution, or replace the asset.',
+      }))
+      : [{
+        priority: 'P2',
+        category: 'Media Compliance',
+        action: 'Keep proof of license or ownership for all shipped media assets.',
+      }],
+    findings,
+  };
+}
+
+function renderMediaComplianceReport(report) {
+  const out = document.getElementById('compliance-out');
+  const issues = report.issues || [];
+  const limitations = report.limitations || [];
+  const normalized = normalizeMediaComplianceReport(report);
+  lastReport = normalized;
+
+  out.innerHTML = `
+    <div class="summary-card">
+      <h2>Media Copyright Risk</h2>
+      <div class="risk-score">
+        <div class="score">${esc(report.compliance_score ?? 'N/A')}/100</div>
+        <div class="level ${esc(riskLevelClass(report.risk_level || 'unknown'))}">
+          ${esc(report.risk_level || 'UNKNOWN')}
+        </div>
+      </div>
+      <div class="summary-grid">
+        <div><b>Images</b>${esc(report.images_scanned || 0)}</div>
+        <div><b>Issues</b>${esc(issues.length)}</div>
+        <div><b>Reverse</b>${report.reverse_search_enabled ? 'Enabled' : 'Disabled'}</div>
+        <div><b>Score</b>${esc(report.compliance_score ?? 'N/A')}</div>
+      </div>
+      <div class="summary-section">
+        <h3>Page</h3>
+        <ul class="summary-list"><li>${esc(report.page_url || currentUrl || 'Unknown')}</li></ul>
+      </div>
+      <div class="summary-section">
+        <h3>Limitations</h3>
+        <ul class="summary-list">
+          ${limitations.length ? limitations.map((item) => `<li>${esc(item)}</li>`).join('') : '<li class="summary-muted">No limitations returned</li>'}
+        </ul>
+      </div>
+    </div>
+  `;
+
+  if (!issues.length) {
+    out.innerHTML += '<div class="empty"><span class="empty-icon">OK</span>No media compliance issues found</div>';
+    return;
+  }
+
+  const header = document.createElement('div');
+  header.className = 'section-header';
+  header.innerHTML = `Media Issues <span class="section-count">${issues.length}</span>`;
+  out.appendChild(header);
+
+  issues.forEach((issue, index) => {
+    const id = `media-${index}`;
+    const severity = String(issue.severity || 'LOW').toUpperCase();
+    const matches = issue.matches || [];
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="card-head" data-toggle-body="${id}" data-toggle-chev="${id}-chev" style="cursor:pointer">
+        <span class="sev-tag sev-${severity}">${esc(severity)}</span>
+        <div style="min-width:0;flex:1">
+          <div class="card-title-row">
+            <span class="card-title">${esc(issue.title || 'Media Issue')}</span>
+          </div>
+          <div class="card-meta asset-url">${esc(issue.category || '')}</div>
+        </div>
+        <span class="chevron open" id="${id}-chev">&gt;</span>
+      </div>
+      <div class="card-body open" id="${id}">
+        <div class="body-sec"><div class="sec-label">File / URL</div><div class="body-text" style="word-break:break-all">${esc(issue.file || '')}</div></div>
+        ${issue.evidence ? `<div class="body-sec"><div class="sec-label">Evidence</div><div class="body-text">${esc(issue.evidence)}</div></div>` : ''}
+        ${issue.recommendation ? `<div class="body-sec"><div class="sec-label">Recommendation</div><div class="body-text fix-hint">${esc(issue.recommendation)}</div></div>` : ''}
+        ${matches.length ? `<div class="body-sec"><div class="sec-label">Matches (${matches.length})</div><ul class="asset-list">${matches.map((url) => `<li class="asset-item"><span class="asset-status st-review">match</span><a href="${esc(url)}" target="_blank" style="color:var(--text-dim);word-break:break-all">${esc(url)}</a></li>`).join('')}</ul></div>` : ''}
+      </div>
+    `;
+    out.appendChild(card);
+  });
+}
+
+function normalizeRuntimeGraphResult(data) {
+  if (data.runtime_score !== undefined && Array.isArray(data.issues)) {
+    const summary = data.summary || (data.issues || []).reduce((acc, issue) => {
+      const severity = String(issue.severity || 'LOW').toLowerCase();
+      if (acc[severity] !== undefined) acc[severity] += 1;
+      return acc;
+    }, { high: 0, medium: 0, low: 0 });
+    return {
+      ...data,
+      overall_risk_score: data.overall_risk_score ?? data.runtime_score,
+      overall_risk_level: data.overall_risk_level || riskLevelFromScore(data.runtime_score),
+      total_findings: data.total_findings ?? data.issues_count ?? data.issues.length,
+      confidence_summary: data.confidence_summary || summary,
+      grouped_summary: data.grouped_summary || {
+        by_source: { 'runtime-browser': data.issues.length },
+        by_category: (data.issues || []).reduce((acc, issue) => {
+          const category = issue.category || 'Runtime Security';
+          acc[category] = (acc[category] || 0) + 1;
+          return acc;
+        }, {}),
+      },
+      top_issues: data.top_issues || (data.issues || []).slice(0, 5).map((issue) => ({
+        category: issue.category || 'Runtime Security',
+        message: issue.title,
+        severity: issue.severity,
+        cwe: issue.cwe,
+        owasp: issue.owasp,
+      })),
+      remediation_plan: data.remediation_plan || [],
+    };
+  }
+
+  const runtimeFindings = (data.findings || []).filter((finding) => finding.tool === 'runtime-browser');
+  const issues = runtimeFindings.map((finding) => ({
+    title: finding.message || finding.rule_id || 'Runtime issue',
+    severity: finding.severity || 'LOW',
+    category: finding.category || 'Runtime Security',
+    cwe: finding.cwe || finding.cwe_id || 'CWE-Unknown',
+    owasp: finding.owasp || '',
+    evidence: finding.code_snippet || finding.raw?.evidence || '',
+    recommendation: finding.recommendation || finding.raw?.recommendation || '',
+  }));
+  const summary = issues.reduce((acc, issue) => {
+    const severity = String(issue.severity || 'LOW').toLowerCase();
+    if (acc[severity] !== undefined) acc[severity] += 1;
+    return acc;
+  }, { high: 0, medium: 0, low: 0 });
+
+  const score = Math.max(0, 100 - issues.reduce((sum, issue) => {
+    const severity = String(issue.severity || 'LOW').toUpperCase();
+    if (severity === 'HIGH') return sum + 15;
+    if (severity === 'MEDIUM') return sum + 8;
+    return sum + 3;
+  }, 0));
+
+  return {
+    ...data,
+    url: data.runtime_url || currentUrl,
+    runtime_score: score,
+    overall_risk_score: data.overall_risk_score ?? score,
+    overall_risk_level: data.overall_risk_level || riskLevelFromScore(data.overall_risk_score ?? score),
+    total_findings: data.total_findings ?? issues.length,
+    issues_count: issues.length,
+    issues,
+    summary,
+    confidence_summary: data.confidence_summary || summary,
+    grouped_summary: data.grouped_summary || {
+      by_source: { 'runtime-browser': issues.length },
+      by_category: issues.reduce((acc, issue) => {
+        const category = issue.category || 'Runtime Security';
+        acc[category] = (acc[category] || 0) + 1;
+        return acc;
+      }, {}),
+    },
+    top_issues: data.top_issues || issues.slice(0, 5).map((issue) => ({
+      category: issue.category || 'Runtime Security',
+      message: issue.title,
+      severity: issue.severity,
+      cwe: issue.cwe,
+      owasp: issue.owasp,
+    })),
+    remediation_plan: data.remediation_plan || [],
+  };
+}
+
+function groupRuntimeIssues(issues) {
+  return (issues || []).reduce((acc, issue) => {
+    const severity = String(issue.severity || 'LOW').toUpperCase();
+    if (!acc[severity]) acc[severity] = [];
+    acc[severity].push(issue);
+    return acc;
+  }, {});
+}
+
 function toggleCard(bodyId, chevId) {
   const body = document.getElementById(bodyId);
   const chev = document.getElementById(chevId);
@@ -652,6 +1164,30 @@ function updateSummary(results) {
   if (results.length > 0) document.getElementById('summary').classList.add('visible');
 }
 
+function updateRuntimeSummary(data) {
+  const normalized = normalizeRuntimeGraphResult(data || {});
+  const summary = normalized.summary || {};
+  document.getElementById('s-crit').textContent = 0;
+  document.getElementById('s-high').textContent = summary.high || 0;
+  document.getElementById('s-med').textContent = summary.medium || 0;
+  document.getElementById('s-low').textContent = summary.low || 0;
+  if ((normalized.issues_count || 0) > 0) document.getElementById('summary').classList.add('visible');
+}
+
+function updateMediaComplianceSummary(report) {
+  const issues = report.issues || [];
+  const c = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+  issues.forEach((issue) => {
+    const key = String(issue.severity || 'LOW').toUpperCase();
+    if (c[key] !== undefined) c[key]++;
+  });
+  document.getElementById('s-crit').textContent = 0;
+  document.getElementById('s-high').textContent = c.HIGH;
+  document.getElementById('s-med').textContent = c.MEDIUM;
+  document.getElementById('s-low').textContent = c.LOW;
+  if (issues.length > 0) document.getElementById('summary').classList.add('visible');
+}
+
 function setStatus(text, cls, pulse) {
   const el = document.getElementById('statusbar');
   if (!el) return;
@@ -660,7 +1196,7 @@ function setStatus(text, cls, pulse) {
 }
 
 function setBtnsDisabled(disabled) {
-  ['btnScan', 'btnDeep', 'btnClear'].forEach(id => {
+  ['btnRuntime', 'btnMediaCompliance', 'btnClear', 'exportJsonBtn', 'exportHtmlBtn'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = disabled;
   });

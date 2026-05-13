@@ -7,24 +7,19 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from agents.state import SecurityGraphState
+from agents.nodes.context_agent import context_agent_node
+from agents.nodes.data_flow_agent import data_flow_agent_node
+from agents.nodes.report_agent import (
+    build_remediation_plan,
+    calculate_risk_score,
+    get_risk_level,
+    get_top_issues,
+    group_findings,
+)
+from agents.nodes.runtime_agent import runtime_agent_node
+from agents.nodes.scanner_agent import scanner_agent_node
 from rag.services.self_rag import SelfRAG
 from rag.services.vulnerability_validator import VulnerabilityValidator
-
-try:
-    from scanners.semgrep_runner import run_semgrep
-except Exception:
-    run_semgrep = None
-
-try:
-    from scanners.eslint_runner import run_eslint
-except Exception:
-    run_eslint = None
-
-try:
-    from scanners.dependency_runner import run_dependency_scan
-except Exception:
-    run_dependency_scan = None
-
 
 class GraphExplanationLLM:
     """Local, deterministic LLM adapter for orchestration v1."""
@@ -52,43 +47,6 @@ class GraphExplanationLLM:
             "6. Confidence Level\n"
             "LOW if RAG evidence is unavailable or unrelated; HIGH only when static, RAG, and answer support the same issue."
         )
-
-
-def scan_node(state: SecurityGraphState) -> Dict[str, Any]:
-    project_path = state.get("project_path")
-    findings: List[Dict[str, Any]] = []
-    errors = list(state.get("errors", []))
-
-    if not project_path:
-        return {"raw_findings": [], "errors": errors + ["project_path missing"]}
-
-    if run_semgrep:
-        try:
-            findings.extend(run_semgrep(project_path) or [])
-        except Exception as exc:
-            errors.append(f"Semgrep failed: {_short_error(exc)}")
-
-    if os.getenv("AUTOSHIELD_ENABLE_ESLINT", "").lower() in ("1", "true", "yes") and run_eslint:
-        try:
-            findings.extend(run_eslint(project_path) or [])
-        except Exception as exc:
-            errors.append(f"ESLint failed: {_short_error(exc)}")
-
-    if run_dependency_scan:
-        try:
-            findings.extend(run_dependency_scan(project_path) or [])
-        except Exception as exc:
-            errors.append(f"Dependency scan failed: {_short_error(exc)}")
-
-    if not findings:
-        try:
-            import scanner
-
-            findings.extend(scanner.run_scanners(project_path) or [])
-        except Exception as exc:
-            errors.append(f"Fallback scanner failed: {_short_error(exc)}")
-
-    return {"raw_findings": findings, "errors": errors}
 
 
 def normalize_node(state: SecurityGraphState) -> Dict[str, Any]:
@@ -141,7 +99,7 @@ def normalize_node(state: SecurityGraphState) -> Dict[str, Any]:
             "code_snippet": finding.get("code_snippet") or finding.get("lines") or extra.get("lines", ""),
             "raw": finding,
         }
-        for key in ("package", "installed_version", "fixed_version", "url"):
+        for key in ("package", "installed_version", "fixed_version", "url", "detected_by"):
             value = finding.get(key)
             if value:
                 normalized_item[key] = value
@@ -164,6 +122,8 @@ def select_finding_node(state: SecurityGraphState) -> Dict[str, Any]:
 
     return {
         "current_finding": findings[index],
+        "cross_file_context": {},
+        "data_flow": {},
         "rag_query": "",
         "rag_docs": [],
         "rag_quality": {},
@@ -176,7 +136,9 @@ def select_finding_node(state: SecurityGraphState) -> Dict[str, Any]:
 
 def rag_node(state: SecurityGraphState) -> Dict[str, Any]:
     finding = state.get("current_finding", {})
-    query = state.get("rag_query") or build_rag_query(finding)
+    context = state.get("cross_file_context", {})
+    flow = state.get("data_flow", {})
+    query = state.get("rag_query") or build_rag_query(finding, context, flow)
 
     try:
         rag = SelfRAG(llm=GraphExplanationLLM())
@@ -186,6 +148,14 @@ def rag_node(state: SecurityGraphState) -> Dict[str, Any]:
             "rag_docs": rag_result.get("documents_used", []),
             "explanation": rag_result.get("answer", ""),
             "validation": rag_result.get("validation", {}),
+            "agent_trace": state.get("agent_trace", [])
+            + [
+                {
+                    "agent": "RAG Agent",
+                    "status": "completed",
+                    "documents_used": len(rag_result.get("documents_used", [])),
+                }
+            ],
         }
     except Exception as exc:
         fallback_explanation = build_fallback_explanation(finding, str(exc))
@@ -194,6 +164,14 @@ def rag_node(state: SecurityGraphState) -> Dict[str, Any]:
             "rag_docs": [],
             "explanation": fallback_explanation,
             "validation": {},
+            "agent_trace": state.get("agent_trace", [])
+            + [
+                {
+                    "agent": "RAG Agent",
+                    "status": "failed",
+                    "error": _short_error(exc),
+                }
+            ],
         }
 
 
@@ -220,8 +198,24 @@ def rewrite_rag_query_node(state: SecurityGraphState) -> Dict[str, Any]:
 def validate_node(state: SecurityGraphState) -> Dict[str, Any]:
     existing_validation = state.get("validation", {})
     if existing_validation:
-        validation = _apply_rag_quality_downgrade(existing_validation, state.get("rag_quality", {}))
-        return {"validation": validation}
+        validation = _apply_runtime_validation(
+            existing_validation,
+            state.get("current_finding", {}),
+            state.get("rag_quality", {}),
+        )
+        validation = _apply_rag_quality_downgrade(validation, state.get("rag_quality", {}))
+        validation = _apply_data_flow_validation(validation, state.get("data_flow", {}))
+        return {
+            "validation": validation,
+            "agent_trace": state.get("agent_trace", [])
+            + [
+                {
+                    "agent": "Validation Agent",
+                    "status": "completed",
+                    "confidence": validation.get("confidence", "UNKNOWN"),
+                }
+            ],
+        }
 
     finding = state.get("current_finding", {})
     rag_docs = state.get("rag_docs", [])
@@ -229,15 +223,31 @@ def validate_node(state: SecurityGraphState) -> Dict[str, Any]:
     validator = VulnerabilityValidator()
 
     validation = validator.validate(
-        query=build_rag_query(finding),
+        query=build_rag_query(
+            finding,
+            state.get("cross_file_context", {}),
+            state.get("data_flow", {}),
+        ),
         docs=rag_docs,
         static_findings=[finding],
         llm_answer=explanation,
     )
 
+    validation = _apply_runtime_validation(validation, finding, state.get("rag_quality", {}))
     validation = _apply_rag_quality_downgrade(validation, state.get("rag_quality", {}))
+    validation = _apply_data_flow_validation(validation, state.get("data_flow", {}))
 
-    return {"validation": validation}
+    return {
+        "validation": validation,
+        "agent_trace": state.get("agent_trace", [])
+        + [
+            {
+                "agent": "Validation Agent",
+                "status": "completed",
+                "confidence": validation.get("confidence", "UNKNOWN"),
+            }
+        ],
+    }
 
 
 def enrich_finding_node(state: SecurityGraphState) -> Dict[str, Any]:
@@ -250,6 +260,8 @@ def enrich_finding_node(state: SecurityGraphState) -> Dict[str, Any]:
             "rag_query": state.get("rag_query", ""),
             "rag_docs": state.get("rag_docs", []),
             "rag_quality": state.get("rag_quality", {}),
+            "cross_file_context": state.get("cross_file_context", {}),
+            "data_flow": state.get("data_flow", {}),
             "validation": state.get("validation", {}),
             "explanation": state.get("explanation", ""),
         }
@@ -262,6 +274,8 @@ def enrich_finding_node(state: SecurityGraphState) -> Dict[str, Any]:
         "rag_query": "",
         "rag_docs": [],
         "rag_quality": {},
+        "cross_file_context": {},
+        "data_flow": {},
         "rag_attempts": 0,
         "validation": {},
         "explanation": "",
@@ -272,6 +286,18 @@ def report_node(state: SecurityGraphState) -> Dict[str, Any]:
     enriched = state.get("enriched_findings", [])
     errors = state.get("errors", [])
     summary = {"high": 0, "medium": 0, "low": 0}
+    agent_trace = state.get("agent_trace", []) + [
+        {
+            "agent": "Report Agent",
+            "status": "completed",
+            "findings_reported": len(enriched),
+        }
+    ]
+    risk_score = calculate_risk_score(enriched)
+    risk_level = get_risk_level(risk_score)
+    groups = group_findings(enriched)
+    top_issues = get_top_issues(enriched)
+    remediation_plan = build_remediation_plan(enriched)
 
     for item in enriched:
         confidence = item.get("validation", {}).get("confidence", "LOW").upper()
@@ -285,8 +311,15 @@ def report_node(state: SecurityGraphState) -> Dict[str, Any]:
     return {
         "report": {
             "project_path": state.get("project_path"),
+            "runtime_url": state.get("runtime_url"),
+            "overall_risk_score": risk_score,
+            "overall_risk_level": risk_level,
             "total_findings": len(enriched),
             "confidence_summary": summary,
+            "grouped_summary": groups,
+            "top_issues": top_issues,
+            "remediation_plan": remediation_plan,
+            "agent_trace": agent_trace,
             "findings": enriched,
             "errors": errors,
         }
@@ -347,6 +380,9 @@ def grade_rag_evidence(finding: Dict[str, Any], docs: List[Dict[str, Any]]) -> D
     elif category_match and best_similarity >= 0.75:
         passed = True
         reason = "Category match with strong similarity"
+    elif finding.get("tool") == "runtime-browser" and best_similarity >= 0.6:
+        passed = True
+        reason = "Runtime evidence supported by strong RAG similarity"
     else:
         passed = False
         reason = "RAG evidence does not strongly match expected CWE/category"
@@ -429,6 +465,51 @@ def _apply_rag_quality_downgrade(
     return downgraded
 
 
+def _apply_runtime_validation(
+    validation: Dict[str, Any],
+    finding: Dict[str, Any],
+    rag_quality: Dict[str, Any],
+) -> Dict[str, Any]:
+    if finding.get("tool") != "runtime-browser" or not rag_quality.get("passed"):
+        return validation
+
+    severity = str(finding.get("severity", "MEDIUM")).upper()
+    confidence = "HIGH" if severity in ("HIGH", "CRITICAL", "MEDIUM") else "MEDIUM"
+    return {
+        **validation,
+        "vulnerability_type": finding.get("category", validation.get("vulnerability_type", "Runtime Security")),
+        "is_valid": True,
+        "confidence": confidence,
+        "evidence": {
+            "static_scan_supported": True,
+            "rag_supported": True,
+            "llm_supported": True,
+        },
+        "final_decision": "Confirmed runtime finding - browser evidence and RAG context agree",
+    }
+
+
+def _apply_data_flow_validation(
+    validation: Dict[str, Any],
+    data_flow: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not data_flow.get("confirmed"):
+        return validation
+
+    updated = dict(validation)
+    evidence = dict(updated.get("evidence", {}))
+    evidence["data_flow_supported"] = True
+    updated["evidence"] = evidence
+
+    if str(updated.get("confidence", "")).upper() == "MEDIUM":
+        updated["confidence"] = "HIGH"
+        updated["final_decision"] = (
+            "Confirmed vulnerability - static scan, RAG, and data-flow evidence agree"
+        )
+
+    return updated
+
+
 def infer_category(message: str, rule_id: str, cwe: str) -> str:
     text = f"{message} {rule_id} {cwe}".lower()
 
@@ -450,15 +531,37 @@ def infer_category(message: str, rule_id: str, cwe: str) -> str:
         return "Path Traversal"
     if "dependency" in text or "npm-audit" in text or "vulnerable package" in text or "outdated component" in text:
         return "Vulnerable Dependency"
+    if "security header" in text or "content-security-policy" in text or "x-frame-options" in text or "permissions-policy" in text:
+        return "Security Headers"
+    if "mixed content" in text or "external script loaded over http" in text:
+        return "Mixed Content"
+    if "inline script" in text or "content security policy" in text:
+        return "Inline Script"
+    if "external scripts without integrity" in text or "subresource integrity" in text or "sri" in text:
+        return "Missing SRI"
+    if "cookie" in text:
+        return "Cookie Security"
+    if "secret exposure" in text or "frontend secret" in text:
+        return "Exposed Frontend Secret"
     if "rate limit" in text or "cwe-307" in text:
         return "Missing Rate Limiting"
 
     return "Security Issue"
 
 
-def build_rag_query(finding: Dict[str, Any]) -> str:
+def build_rag_query(
+    finding: Dict[str, Any],
+    context: Dict[str, Any] = None,
+    flow: Dict[str, Any] = None,
+) -> str:
     category = finding.get("category", "Security Issue")
     cwe = finding.get("cwe", "CWE-Unknown")
+    context = context or {}
+    flow = flow or {}
+    related = context.get("related_files", [])
+    sources = context.get("sources", [])
+    sinks = context.get("sinks", [])
+    call_chain_hints = context.get("call_chain_hints", [])
     retrieval_terms = {
         "Hardcoded Secret": "CWE-798 Hardcoded Secret hardcoded API key credential exposure secret token environment variables",
         "SQL Injection": "CWE-89 SQL Injection prepared statements parameterized queries injection prevention",
@@ -470,6 +573,13 @@ def build_rag_query(finding: Dict[str, Any]) -> str:
         "Path Traversal": "CWE-22 Path Traversal directory traversal canonicalization safe path",
         "Missing Rate Limiting": "CWE-307 Missing Rate Limiting brute force login rate limit",
         "Vulnerable Dependency": "CWE-1104 Vulnerable Dependency outdated component vulnerable package npm audit third party component OWASP A06",
+        "Security Headers": "CWE-693 Security Headers Content Security Policy X-Frame-Options Referrer-Policy Permissions-Policy OWASP A05",
+        "Mixed Content": "CWE-319 Mixed Content HTTP resource loaded on HTTPS transport security OWASP A05",
+        "Inline Script": "CWE-693 Inline Script Content Security Policy unsafe-inline OWASP A05",
+        "Missing SRI": "CWE-829 Subresource Integrity external script without integrity supply chain OWASP A05",
+        "Cookie Security": "CWE-614 Cookie Secure HttpOnly SameSite session cookie OWASP A05",
+        "Secrets Exposure": "CWE-798 Exposed frontend secret API key token localStorage sessionStorage OWASP A07",
+        "Exposed Frontend Secret": "CWE-798 Exposed frontend secret API key token localStorage sessionStorage OWASP A07",
     }.get(category, f"{category} {cwe}")
 
     return f"""
@@ -482,6 +592,15 @@ Rule: {finding.get("rule_id", "")}
 Severity: {finding.get("severity", "")}
 Code: {finding.get("code_snippet", "")}
 Package: {finding.get("package", "")}
+
+Cross-file context:
+Related files: {related}
+Sources found: {sources}
+Sinks found: {sinks}
+Call chain hints: {call_chain_hints}
+
+Data flow evidence:
+{flow}
 """
 
 
@@ -518,9 +637,12 @@ def _short_error(exc: Exception) -> str:
 def build_security_graph():
     graph = StateGraph(SecurityGraphState)
 
-    graph.add_node("scan", scan_node)
+    graph.add_node("scan", scanner_agent_node)
+    graph.add_node("runtime_scan", runtime_agent_node)
     graph.add_node("normalize", normalize_node)
     graph.add_node("select_finding", select_finding_node)
+    graph.add_node("context", context_agent_node)
+    graph.add_node("data_flow", data_flow_agent_node)
     graph.add_node("rag", rag_node)
     graph.add_node("grade_rag", grade_rag_node)
     graph.add_node("rewrite_rag_query", rewrite_rag_query_node)
@@ -528,14 +650,17 @@ def build_security_graph():
     graph.add_node("enrich_finding", enrich_finding_node)
     graph.add_node("report", report_node)
 
-    graph.set_entry_point("scan")
+    graph.set_entry_point("runtime_scan")
+    graph.add_edge("runtime_scan", "scan")
     graph.add_edge("scan", "normalize")
     graph.add_conditional_edges(
         "normalize",
         should_continue_findings,
         {"continue": "select_finding", "report": "report"},
     )
-    graph.add_edge("select_finding", "rag")
+    graph.add_edge("select_finding", "context")
+    graph.add_edge("context", "data_flow")
+    graph.add_edge("data_flow", "rag")
     graph.add_edge("rag", "grade_rag")
     graph.add_conditional_edges(
         "grade_rag",

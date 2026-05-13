@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoShield Vulnerable Demo</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="http://example.com/insecure-lib.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.19/lodash.min.js"></script>
+  <script>
+    const INLINE_DEMO_SECRET = "inline_secret_token_456";
+    function runInlineDemo() {
+      const value = document.getElementById("searchInput").value;
+      document.getElementById("inlineResult").innerHTML = "<strong>" + value + "</strong>";
+    }
+  </script>
+</head>
+<body>
+  <header class="hero">
+    <nav>
+      <strong>AutoShield Demo</strong>
+      <a href="/search?q=<script>alert(1)</script>">Reflected XSS Link</a>
+      <a href="/user?email=' OR '1'='1">SQLi Link</a>
+      <a href="/ping?host=google.com">Ping Link</a>
+    </nav>
+    <div class="hero-grid">
+      <div>
+        <h1>Intentionally Vulnerable Website</h1>
+        <p>This page is designed to trigger AutoShield static, dependency, runtime, data-flow, and media compliance checks.</p>
+        <form action="/search" method="GET">
+          <input id="searchInput" name="q" placeholder="Try <script>alert(1)</script>">
+          <button type="submit">Search</button>
+          <button type="button" onclick="runInlineDemo()">Unsafe Inline Render</button>
+        </form>
+        <div id="inlineResult"></div>
+      </div>
+      <img src="/hero.jpg" alt="Demo hero image">
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Media Assets</h2>
+      <div class="media-grid">
+        <img src="/hero.jpg" alt="Hero">
+        <img src="/stock_banner.jpg" alt="Stock-style banner">
+        <img src="/logo.jpg" alt="Logo">
+      </div>
+    </section>
+
+    <section>
+      <h2>Runtime DOM Sink</h2>
+      <input id="domInput" value="<img src=x onerror=alert(1)>">
+      <button id="domButton">Render with innerHTML</button>
+      <button id="evalButton">Run eval from URL</button>
+      <div id="result"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

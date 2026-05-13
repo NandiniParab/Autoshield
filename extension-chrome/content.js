@@ -9,6 +9,24 @@
 
   // ─── Listen for extraction request from background ─────────────────
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.type === 'collectRuntimeData') {
+      try {
+        sendResponse({ ok: true, data: collectRuntimeData() });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+      return true;
+    }
+
+    if (msg.type === 'COLLECT_MEDIA_COMPLIANCE_DATA') {
+      try {
+        sendResponse({ ok: true, data: collectMediaComplianceData() });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+      return true;
+    }
+
     if (msg.type === 'extractPageData') {
       try {
         const data = extractAll();
@@ -30,6 +48,138 @@
     }
     return true;
   });
+
+  function collectRuntimeData() {
+    const inlineScripts = Array.from(document.querySelectorAll('script:not([src])')).map((script) => {
+      const content = script.textContent || '';
+      return {
+        content_sample: content.slice(0, 500),
+        length: content.length,
+        contains_eval: /\beval\s*\(|new\s+Function\s*\(/.test(content),
+      };
+    });
+
+    const scripts = Array.from(document.querySelectorAll('script')).map((script) => {
+      const src = script.getAttribute('src') || '';
+      return {
+        src: src ? resolveUrl(src) : '',
+        integrity: script.getAttribute('integrity') || '',
+        crossorigin: script.getAttribute('crossorigin') || '',
+        is_inline: !src,
+      };
+    });
+
+    return {
+      title: document.title,
+      url: window.location.href,
+      scripts,
+      inline_scripts: inlineScripts,
+      stylesheets: Array.from(document.querySelectorAll('link[rel~="stylesheet"]')).map((link) => ({
+        href: resolveUrl(link.getAttribute('href') || ''),
+      })).slice(0, 100),
+      images: Array.from(document.querySelectorAll('img[src]')).map((img) => ({
+        src: resolveUrl(img.getAttribute('src') || ''),
+      })).slice(0, 100),
+      iframes: Array.from(document.querySelectorAll('iframe[src]')).map((frame) => ({
+        src: resolveUrl(frame.getAttribute('src') || ''),
+      })).slice(0, 50),
+      mixed_content: detectMixedContent(),
+      cookies: getCookieNames(),
+      local_storage_keys: getStorageKeys(localStorage),
+      session_storage_keys: getStorageKeys(sessionStorage),
+      local_storage_samples: getStorageSamples(localStorage),
+      session_storage_samples: getStorageSamples(sessionStorage),
+      has_eval: inlineScripts.some((script) => script.contains_eval),
+      page_text_sample: (document.body?.innerText || '').slice(0, 2000),
+    };
+  }
+
+  function collectMediaComplianceData() {
+    const imageUrls = new Set();
+
+    document.querySelectorAll('img').forEach((img) => {
+      if (img.src) {
+        imageUrls.add(img.src);
+      }
+
+      if (img.currentSrc) {
+        imageUrls.add(img.currentSrc);
+      }
+    });
+
+    document.querySelectorAll('source').forEach((source) => {
+      if (source.src) {
+        imageUrls.add(source.src);
+      }
+    });
+
+    document.querySelectorAll('*').forEach((el) => {
+      const style = window.getComputedStyle(el);
+      const bg = style.backgroundImage;
+
+      if (bg && bg !== 'none') {
+        const matches = [...bg.matchAll(/url\(["']?(.*?)["']?\)/g)];
+
+        matches.forEach((match) => {
+          if (match[1]) {
+            try {
+              const absoluteUrl = new URL(match[1], location.href).href;
+              imageUrls.add(absoluteUrl);
+            } catch (_) {}
+          }
+        });
+      }
+    });
+
+    const cleanImageUrls = [...imageUrls].filter((url) => {
+      return (
+        url &&
+        !url.startsWith('data:') &&
+        !url.startsWith('blob:') &&
+        /\.(jpg|jpeg|png|webp|gif|bmp)(\?|#|$)/i.test(url)
+      );
+    });
+
+    return {
+      page_url: location.href,
+      image_urls: cleanImageUrls,
+    };
+  }
+
+  function getCookieNames() {
+    try {
+      return document.cookie
+        .split(';')
+        .map((part) => part.split('=')[0].trim())
+        .filter(Boolean)
+        .slice(0, 50);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function getStorageKeys(storage) {
+    try {
+      return Array.from({ length: storage.length }, (_, index) => storage.key(index))
+        .filter(Boolean)
+        .slice(0, 100);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function getStorageSamples(storage) {
+    const samples = {};
+    try {
+      for (let i = 0; i < Math.min(storage.length, 50); i++) {
+        const key = storage.key(i);
+        if (!key) continue;
+        const value = storage.getItem(key) || '';
+        samples[key] = value.slice(0, 200);
+      }
+    } catch (_) {}
+    return samples;
+  }
 
   // ─── Main Extraction Orchestrator ─────────────────────────────────
   function extractAll() {

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AutoShield Runtime Test</title>
+  <script src="http://example.com/insecure-lib.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.19/lodash.min.js"></script>
+  <link rel="stylesheet" href="http://example.com/insecure.css">
+</head>
+<body>
+  <h1>Runtime Test Page</h1>
+  <img src="http://example.com/insecure.png" alt="mixed content sample">
+  <script>
+    const SECRET = "frontend_secret_key_123";
+    const API_KEY = "sk_test_runtime_example_123";
+    localStorage.setItem("API_TOKEN", "ghp_runtimeExampleToken123456");
+    eval("console.log('unsafe eval')");
+    const fn = new Function("return SECRET");
+  </script>
+</body>
+</html>

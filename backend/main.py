@@ -26,6 +26,9 @@ from rag.services.llm_service import generate_fix_for_snippet
 from api.rag_routes import router as rag_router
 from api.fix_routes import router as fix_router
 from api.agent_routes import router as agent_router
+from api.runtime_routes import router as runtime_router
+from api.report_routes import router as report_router
+from api.media_reverse_search_routes import router as media_reverse_search_router
 
 app = FastAPI(title="AutoShield API", version="2.0.0")
 
@@ -44,6 +47,13 @@ app.add_middleware(
 app.include_router(rag_router)
 app.include_router(fix_router, prefix="/api", tags=["Fix Generator"])
 app.include_router(agent_router, prefix="/api/agent", tags=["Agentic Security Graph"])
+app.include_router(runtime_router, prefix="/api/runtime", tags=["Runtime Browser Analysis"])
+app.include_router(report_router, prefix="/api/report", tags=["Report Export"])
+app.include_router(
+    media_reverse_search_router,
+    prefix="/api/compliance",
+    tags=["Media Copyright Risk / License Compliance"],
+)
 
 VULNERABILITY_DB_FIELDS = {"tool", "file_path", "line", "message", "severity"}
 

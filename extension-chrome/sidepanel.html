@@ -102,10 +102,11 @@
     .tab-btn:hover { color: var(--text-dim); }
     .tab-btn.active { color: var(--amber); border-bottom-color: var(--amber); background: var(--bg3); }
 
-    /* ── Toolbar ─────────────────────────────── */
-    .toolbar {
+    /* ── Actions ─────────────────────────────── */
+    .panel-actions,
+    .utility-actions {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: 1fr;
       gap: 1px;
       background: var(--border);
       border-bottom: 1px solid var(--border);
@@ -177,6 +178,107 @@
     .n-low  { color: var(--green); }
     .n-info { color: var(--blue); }
 
+    .summary-card {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+    .summary-card h2 {
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--amber);
+      margin-bottom: 8px;
+    }
+    .risk-score {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .score {
+      color: var(--amber);
+      font-size: 22px;
+      font-weight: 600;
+      line-height: 1;
+    }
+    .level {
+      border: 1px solid currentColor;
+      padding: 3px 6px;
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .level.low { color: var(--green); }
+    .level.medium { color: var(--yellow); }
+    .level.high { color: var(--orange); }
+    .level.critical { color: var(--red); }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      background: var(--border);
+      margin: 8px 0;
+    }
+    .summary-grid div {
+      background: var(--bg3);
+      padding: 6px 2px;
+      text-align: center;
+      font-size: 10px;
+    }
+    .summary-grid b {
+      display: block;
+      color: var(--text-lo);
+      font-size: 7px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+    .summary-section { margin-top: 8px; }
+    .summary-section h3 {
+      color: var(--text-lo);
+      font-size: 8px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .summary-list {
+      list-style: none;
+      font-size: 9px;
+      color: var(--text-dim);
+    }
+    .summary-list li {
+      border-top: 1px solid var(--border);
+      padding: 4px 0;
+      line-height: 1.45;
+    }
+    .summary-muted { color: var(--text-lo); }
+
+    .export-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .export-actions button {
+      background: var(--bg2);
+      color: var(--text-dim);
+      border: none;
+      padding: 7px 2px;
+      cursor: pointer;
+      font-family: var(--font-mono);
+      font-size: 8px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .export-actions button:hover {
+      background: var(--bg3);
+      color: var(--amber);
+    }
+
     /* ── Tab panels ──────────────────────────── */
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
@@ -190,7 +292,16 @@
       letter-spacing: 0.08em;
       line-height: 2.5;
     }
-    .empty-icon { font-size: 24px; display: block; margin-bottom: 8px; opacity: 0.4; }
+    .empty-icon {
+      font-size: 9px;
+      display: inline-block;
+      margin-bottom: 8px;
+      opacity: 0.7;
+      border: 1px solid var(--border2);
+      padding: 2px 5px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
 
     /* ── Card ────────────────────────────────── */
     .card { border-bottom: 1px solid var(--border); }
@@ -482,19 +593,17 @@
 
   <!-- Tabs -->
   <div class="tabs">
-    <button class="tab-btn active" id="tab-security">⚡ Security</button>
-    <button class="tab-btn" id="tab-compliance">© Compliance</button>
+    <button class="tab-btn active" id="tab-security">Security</button>
+    <button class="tab-btn" id="tab-compliance">Compliance</button>
   </div>
 
-  <!-- Toolbar -->
-  <div class="toolbar">
-    <button class="tbtn primary" id="btnScan">[ Scan ]</button>
-    <button class="tbtn" id="btnDeep">[ Deep ]</button>
+  <!-- Utility actions -->
+  <div class="utility-actions">
     <button class="tbtn" id="btnClear">[ Clear ]</button>
   </div>
 
   <!-- Status -->
-  <div id="statusbar" class="statusbar">Ready — open a page and click Scan</div>
+  <div id="statusbar" class="statusbar">Ready - choose a tab and run a scan</div>
 
   <!-- Debug log -->
   <div id="log" style="max-height:120px;overflow-y:auto;padding:8px;border-top:1px solid #333;font-family:monospace;"></div>
@@ -507,22 +616,33 @@
     <div class="sum-cell"><span class="sum-n n-low"  id="s-low">0</span><span class="sum-l">Low</span></div>
   </div>
 
+  <div class="export-actions">
+    <button id="exportJsonBtn">Export JSON</button>
+    <button id="exportHtmlBtn">Export HTML</button>
+  </div>
+
   <!-- Security Tab -->
   <div id="panel-security" class="tab-panel active">
+    <div class="panel-actions">
+      <button class="tbtn primary" id="btnRuntime">[ Runtime Scan ]</button>
+    </div>
     <div id="security-out">
       <div class="empty">
-        <span class="empty-icon">🔒</span>
-        Click <strong>[Scan]</strong> to analyze<br/>the current page for<br/>security vulnerabilities
+        <span class="empty-icon">Locked</span>
+        Click <strong>[Runtime Scan]</strong> to analyze<br/>the current page for<br/>security vulnerabilities
       </div>
     </div>
   </div>
 
   <!-- Compliance Tab -->
   <div id="panel-compliance" class="tab-panel">
+    <div class="panel-actions">
+      <button class="tbtn primary" id="btnMediaCompliance">[ Media Compliance ]</button>
+    </div>
     <div id="compliance-out">
       <div class="empty">
-        <span class="empty-icon">©</span>
-        Click <strong>[Scan]</strong> to check<br/>media assets for<br/>copyright & compliance
+        <span class="empty-icon">Check</span>
+        Click <strong>[Media Compliance]</strong> to check<br/>media assets for<br/>copyright & compliance
       </div>
     </div>
   </div>

@@ -39,6 +39,10 @@
         "title": "AutoShield: Full Scan (Static + RAG + LLM)"
       },
       {
+        "command": "autoshield.mediaComplianceScan",
+        "title": "AutoShield: Media Compliance Scan"
+      },
+      {
         "command": "autoshield.analyzeSelection",
         "title": "AutoShield: Analyze Selected Code"
       },

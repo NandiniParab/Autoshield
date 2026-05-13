@@ -63,11 +63,21 @@ class SelfRAG:
         Extracts CWE ID and severity from the query to help the retriever.
         """
         q = query.lower()
+        if "security headers" in q or "content-security-policy" in q or "x-frame-options" in q or "permissions-policy" in q or "cwe-693" in q:
+            return "CWE-693", "medium"
+        if "mixed content" in q or "external script loaded over http" in q or "cwe-319" in q:
+            return "CWE-319", "high"
+        if "external scripts without integrity" in q or "subresource integrity" in q or "sri" in q or "cwe-829" in q:
+            return "CWE-829", "medium"
+        if "cookie security" in q or "httponly" in q or "samesite" in q or "secure cookie" in q or "cwe-614" in q or "cwe-1004" in q:
+            return "CWE-614", "medium"
+        if "code execution" in q or "code injection" in q or re.search(r"\beval\b", q) or "new function" in q or "cwe-95" in q:
+            return "CWE-95", "critical"
         if "vulnerable dependency" in q or "outdated component" in q or "a06" in q or "npm-audit" in q:
             return "CWE-1104", "high"
         if "sql injection" in q or "cwe-89" in q:
             return "CWE-89", "high"
-        if "hardcoded" in q or "secret" in q or "api key" in q or "cwe-798" in q:
+        if "hardcoded" in q or "secret" in q or "api key" in q or "frontend secret" in q or "cwe-798" in q:
             return "CWE-798", "high"
         if "xss" in q or "cross site scripting" in q or "cross-site scripting" in q or "cwe-79" in q:
             return "CWE-79", "high"
@@ -75,8 +85,6 @@ class SelfRAG:
             return "CWE-352", "high"
         if "command injection" in q or "cwe-78" in q:
             return "CWE-78", "critical"
-        if "code injection" in q or re.search(r"\beval\b", q) or "cwe-95" in q:
-            return "CWE-95", "critical"
         if "md5" in q or "sha1" in q or "weak cryptography" in q or "cwe-327" in q:
             return "CWE-327", "medium"
         if "cors" in q or "cwe-942" in q:
@@ -332,6 +340,11 @@ class SelfRAG:
                 "OWASP A01 Broken Access Control CWE-284 "
                 "role based access control privilege escalation authorization"
             )
+        elif "code injection" in query_lower or re.search(r"\beval\b", query_lower):
+            rewritten = (
+                "OWASP A03 Injection Code Injection CWE-95 "
+                "eval Function constructor secure coding"
+            )
         elif "hardcoded" in query_lower or "secret" in query_lower or "api key" in query_lower:
             rewritten = (
                 "OWASP A07 Identification and Authentication Failures CWE-798 "
@@ -342,11 +355,6 @@ class SelfRAG:
              rewritten = (
                 "OWASP A07 Identification and Authentication Failures CWE-287 "
                 "password hashing bcrypt Argon2 session management MFA secure login"
-            )
-        elif "code injection" in query_lower or re.search(r"\beval\b", query_lower):
-            rewritten = (
-                "OWASP A03 Injection Code Injection CWE-95 "
-                "eval Function constructor secure coding"
             )
         elif "md5" in query_lower or "sha1" in query_lower or "weak cryptography" in query_lower:
             rewritten = (

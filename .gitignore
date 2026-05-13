@@ -48,6 +48,7 @@ chroma_db/
 logs/
 
 # Secrets and certificates
+keys/
 *.pem
 *.key
 *.crt

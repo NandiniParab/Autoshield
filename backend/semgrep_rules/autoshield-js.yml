@@ -47,6 +47,93 @@ rules:
       owasp: "A03: Injection"
       category: "SQL Injection"
 
+  - id: autoshield-js-sql-injection-query-variable-concat
+    message: "Possible SQL Injection: SQL query variable is built using string concatenation."
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              const $QUERY = "SELECT ..." + $INPUT;
+          - pattern: |
+              let $QUERY = "SELECT ..." + $INPUT;
+          - pattern: |
+              var $QUERY = "SELECT ..." + $INPUT;
+          - pattern: |
+              const $QUERY = "INSERT ..." + $INPUT;
+          - pattern: |
+              const $QUERY = "UPDATE ..." + $INPUT;
+          - pattern: |
+              const $QUERY = "DELETE ..." + $INPUT;
+          - pattern: |
+              const $QUERY = "..." + $INPUT + "...";
+          - pattern: |
+              let $QUERY = "..." + $INPUT + "...";
+          - pattern: |
+              var $QUERY = "..." + $INPUT + "...";
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03: Injection"
+      category: "SQL Injection"
+
+  - id: autoshield-js-sql-injection-db-call-with-query-variable
+    message: "Possible SQL Injection: dynamically constructed query variable is passed to database call."
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $DB.query($QUERY, ...)
+          - pattern: |
+              $DB.get($QUERY, ...)
+          - pattern: |
+              $DB.run($QUERY, ...)
+      - metavariable-regex:
+          metavariable: $QUERY
+          regex: (?i).*(query|sql|statement).*
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03: Injection"
+      category: "SQL Injection"
+
+  - id: autoshield-js-sql-injection-template-variable
+    message: "Possible SQL Injection: SQL query variable is built using template interpolation."
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              const $QUERY = `SELECT ... ${$INPUT} ...`;
+          - pattern: |
+              let $QUERY = `SELECT ... ${$INPUT} ...`;
+          - pattern: |
+              var $QUERY = `SELECT ... ${$INPUT} ...`;
+          - pattern: |
+              const $QUERY = `INSERT ... ${$INPUT} ...`;
+          - pattern: |
+              const $QUERY = `UPDATE ... ${$INPUT} ...`;
+          - pattern: |
+              const $QUERY = `DELETE ... ${$INPUT} ...`;
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03: Injection"
+      category: "SQL Injection"
+
+  - id: autoshield-js-sql-string-concat-any
+    message: "Possible SQL Injection: SQL keyword appears in string concatenation."
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-regex: (?i)(SELECT|INSERT|UPDATE|DELETE).*\\+
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03: Injection"
+      category: "SQL Injection"
+
   - id: autoshield-js-command-injection-exec
     message: Possible Command Injection using exec with dynamic input.
     severity: ERROR
@@ -62,6 +149,25 @@ rules:
               child_process.exec("..." + $INPUT, ...);
           - pattern: |
               child_process.exec(`...${$INPUT}...`, ...);
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03: Injection"
+      category: "Command Injection"
+
+  - id: autoshield-js-command-injection-exec-variable
+    message: "Possible Command Injection: dynamic input passed to exec()."
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: |
+              exec($CMD, ...)
+          - pattern: |
+              child_process.exec($CMD, ...)
+      - metavariable-regex:
+          metavariable: $CMD
+          regex: .*\\+.*|.*\\$\\{.*\\}.*
     metadata:
       cwe: "CWE-78"
       owasp: "A03: Injection"
@@ -103,6 +209,18 @@ rules:
       owasp: "A03: Injection"
       category: "Cross-Site Scripting"
 
+  - id: autoshield-js-dom-xss-innerhtml-variable
+    message: "Possible DOM XSS: user-controlled value assigned to innerHTML."
+    severity: WARNING
+    languages:
+      - javascript
+    pattern: |
+      $EL.innerHTML = $VALUE;
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03: Injection"
+      category: "Cross-Site Scripting"
+
   - id: autoshield-js-dom-xss-outerhtml
     message: Possible DOM XSS through outerHTML assignment.
     severity: WARNING
@@ -127,6 +245,19 @@ rules:
       owasp: "A03: Injection"
       category: "Cross-Site Scripting"
 
+  - id: autoshield-js-express-reflected-xss-send-template
+    message: "Possible reflected XSS: dynamic value sent in HTML response."
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern: |
+          res.send(`...${$INPUT}...`)
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03: Injection"
+      category: "Cross-Site Scripting"
+
   - id: autoshield-js-hardcoded-secret
     message: Hardcoded secret/API key/token detected.
     severity: WARNING
@@ -140,6 +271,24 @@ rules:
       - metavariable-regex:
           metavariable: $NAME
           regex: (?i).*(secret|api|key|token|jwt|password).*
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07: Identification and Authentication Failures"
+      category: "Hardcoded Secret"
+
+  - id: autoshield-js-hardcoded-secret-expanded
+    message: Hardcoded secret/API key/token detected.
+    severity: WARNING
+    languages:
+      - javascript
+    patterns:
+      - pattern-either:
+          - pattern: const $NAME = "...";
+          - pattern: let $NAME = "...";
+          - pattern: var $NAME = "...";
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i).*(secret|token|api|key|password|jwt).*
     metadata:
       cwe: "CWE-798"
       owasp: "A07: Identification and Authentication Failures"

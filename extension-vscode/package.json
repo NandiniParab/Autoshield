@@ -19,7 +19,8 @@
       "activitybar": [
         {
           "id": "autoshield-sidebar",
-          "title": "AutoShield"
+          "title": "AutoShield",
+          "icon": "media/icon.png"
         }
       ]
     },
@@ -36,6 +37,10 @@
       {
         "command": "autoshield.scan",
         "title": "AutoShield: Full Scan (Static + RAG + LLM)"
+      },
+      {
+        "command": "autoshield.mediaComplianceScan",
+        "title": "AutoShield: Media Compliance Scan"
       },
       {
         "command": "autoshield.analyzeSelection",

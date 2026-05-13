@@ -46,27 +46,7 @@ def run_semgrep(target_path: str) -> List[Dict[str, Any]]:
     custom_rules = backend_dir / "semgrep_rules" / "autoshield-js.yml"
     target = Path(target_path).resolve()
 
-    cmd = [
-        *_semgrep_command_prefix(),
-        "--config",
-        "p/javascript",
-        "--config",
-        str(custom_rules),
-        "--json",
-        str(target),
-    ]
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if _native_semgrep_unusable(result):
-        docker_result = _run_semgrep_with_docker(target, custom_rules)
-        if docker_result is not None:
-            result = docker_result
+    result = _run_semgrep_preferred(target, custom_rules)
 
     if result.returncode == 1 and not result.stdout.strip() and result.stderr.strip():
         detail = result.stderr.strip()
@@ -112,12 +92,65 @@ def run_semgrep(target_path: str) -> List[Dict[str, Any]]:
                 "owasp": owasp,
                 "category": metadata.get("category", "Security Issue"),
                 "metadata": metadata,
+                "detected_by": _detected_by(item.get("check_id")),
                 "code_snippet": _read_source_line(semgrep_file, target, line) or extra.get("lines", ""),
                 "raw": item,
             }
         )
 
     return findings
+
+
+def _run_semgrep_preferred(
+    target: Path,
+    custom_rules: Path,
+) -> subprocess.CompletedProcess[str]:
+    attempts: List[str] = []
+
+    if _prefer_docker_semgrep():
+        docker_result = _run_semgrep_with_docker(target, custom_rules)
+        if _semgrep_result_usable(docker_result):
+            print("Semgrep mode: docker")
+            return docker_result
+        attempts.append(_format_attempt_result("Docker Semgrep", docker_result))
+
+    local_result = _run_semgrep_local(target, custom_rules)
+    if _semgrep_result_usable(local_result):
+        print("Semgrep mode: local")
+        return local_result
+    attempts.append(_format_attempt_result("Local Semgrep", local_result))
+
+    if not _prefer_docker_semgrep() or _native_semgrep_unusable(local_result):
+        docker_result = _run_semgrep_with_docker(target, custom_rules)
+        if _semgrep_result_usable(docker_result):
+            print("Semgrep mode: docker")
+            return docker_result
+        attempts.append(_format_attempt_result("Docker Semgrep fallback", docker_result))
+
+    raise RuntimeError("Semgrep failed in all modes. " + " ".join(attempts))
+
+
+def _run_semgrep_local(
+    target: Path,
+    custom_rules: Path,
+) -> subprocess.CompletedProcess[str]:
+    cmd = [
+        *_semgrep_command_prefix(),
+        "--config",
+        "p/javascript",
+        "--config",
+        str(custom_rules),
+        "--json",
+        str(target),
+    ]
+
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def _local_path_from_semgrep_path(semgrep_path: str, target: Path) -> Path:
@@ -130,6 +163,12 @@ def _local_path_from_semgrep_path(semgrep_path: str, target: Path) -> Path:
         return path
 
     return target / path
+
+
+def _detected_by(rule_id: str | None) -> str:
+    if "autoshield" in str(rule_id or ""):
+        return "semgrep-custom-rule"
+    return "semgrep-registry-rule"
 
 
 def _read_source_line(semgrep_path: str, target: Path, line: int | None) -> str:
@@ -169,6 +208,35 @@ def _native_semgrep_unusable(result: subprocess.CompletedProcess[str]) -> bool:
         or "Access is denied" in stderr
         or "No module named 'resource'" in stderr
     )
+
+
+def _prefer_docker_semgrep() -> bool:
+    value = os.getenv("AUTOSHIELD_SEMGREP_DOCKER", "").strip().lower()
+    if value in ("0", "false", "no", "off"):
+        return False
+    if value in ("1", "true", "yes", "on"):
+        return True
+    return os.name == "nt"
+
+
+def _semgrep_result_usable(result: subprocess.CompletedProcess[str] | None) -> bool:
+    if result is None:
+        return False
+    return result.returncode in (0, 1) and bool(result.stdout.strip())
+
+
+def _format_attempt_result(
+    label: str,
+    result: subprocess.CompletedProcess[str] | None,
+) -> str:
+    if result is None:
+        return f"{label}: unavailable."
+
+    detail = (result.stderr or result.stdout or "").strip()
+    if not detail:
+        detail = f"exit code {result.returncode}"
+    first_line = detail.splitlines()[0] if detail else f"exit code {result.returncode}"
+    return f"{label}: {first_line}"
 
 
 def _run_semgrep_with_docker(

@@ -2,24 +2,27 @@ import * as vscode from 'vscode';
 
 export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
+  private lastReport: any = null;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this._view = webviewView;
-
-    webviewView.webview.options = {
-      enableScripts: true,
-    };
-
-    webviewView.webview.html = this._getHtml();
+    webviewView.webview.options = { enableScripts: true };
+    webviewView.webview.html = this.getHtml();
 
     webviewView.webview.onDidReceiveMessage(async (msg) => {
-      console.log("Extension received:", msg);
+      if (msg.command === 'exportReport' || msg.type === 'exportReport') {
+        await this.exportReport(msg.format === 'html' ? 'html' : 'json');
+        return;
+      }
 
       switch (msg.type) {
         case 'runScan':
           vscode.commands.executeCommand('autoshield.scan');
+          break;
+        case 'runMediaCompliance':
+          vscode.commands.executeCommand('autoshield.mediaComplianceScan');
           break;
         case 'clearResults':
           vscode.commands.executeCommand('autoshield.clear');
@@ -30,815 +33,630 @@ export class AutoShieldSidebarProvider implements vscode.WebviewViewProvider {
             line: msg.line,
           });
           break;
-        case 'generateFix':
-          vscode.commands.executeCommand('autoshield.generateFix', {
-            codeSnippet: msg.codeSnippet,
-            vulnType: msg.vulnType,
-            cweId: msg.cweId,
-            findingIndex: msg.findingIndex,
-          });
-          break;
-        case 'applyFix':
-          vscode.commands.executeCommand('autoshield.applyFix', {
-            filePath: msg.filePath,
-            line: msg.line,
-            originalCode: msg.originalCode,
-            fixCode: msg.fixCode,
-            validationPassed: msg.validationPassed,
-          });
-          break;
-        case 'learnAboutIssue':
-          vscode.commands.executeCommand('autoshield.learnAboutIssue', {
-            vulnType: msg.vulnType,
-            cweId: msg.cweId,
-            codeSnippet: msg.codeSnippet,
-            findingIndex: msg.findingIndex,
-          });
-          break;
       }
     });
   }
 
   postMessage(msg: any) {
+    if (msg?.type === 'scanResults' && msg.report) {
+      this.lastReport = msg.report;
+    }
     this._view?.webview.postMessage(msg);
   }
 
-  private _getHtml(): string {
+  private async exportReport(format: 'json' | 'html') {
+    if (!this.lastReport) {
+      vscode.window.showErrorMessage('No AutoShield report available to export.');
+      return;
+    }
+
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const defaultUri = workspaceFolder
+      ? vscode.Uri.joinPath(workspaceFolder.uri, `autoshield-report.${format}`)
+      : vscode.Uri.file(`C:\\tmp\\autoshield-report.${format}`);
+
+    const uri = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: format === 'json'
+        ? { JSON: ['json'] }
+        : { HTML: ['html'] },
+    });
+
+    if (!uri) {
+      return;
+    }
+
+    let content = '';
+
+    if (format === 'json') {
+      content = JSON.stringify(this.lastReport, null, 2);
+    } else {
+      const response = await fetch('http://127.0.0.1:8000/api/report/export', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          format: 'html',
+          report: this.lastReport,
+        }),
+      });
+
+      if (!response.ok) {
+        vscode.window.showErrorMessage('Failed to export HTML report.');
+        return;
+      }
+
+      content = await response.text();
+    }
+
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+    vscode.window.showInformationMessage(`AutoShield ${format.toUpperCase()} report exported.`);
+  }
+
+  private getHtml(): string {
     return `
     <!DOCTYPE html>
     <html>
     <head>
-    <meta charset="UTF-8">
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+      <meta charset="UTF-8">
+      <style>
+        :root {
+          --bg: #17130a;
+          --panel: #211b0f;
+          --panel2: #2b2313;
+          --border: #43351b;
+          --text: #f0c36a;
+          --muted: #a88646;
+          --low: #65a765;
+          --medium: #d6a83d;
+          --high: #e06f38;
+          --critical: #e05353;
+          --info: #6ea6d7;
+        }
 
-      :root {
-        --bg:         #1a1200;
-        --bg2:        #211700;
-        --bg3:        #2a1f00;
-        --border:     #3a2b00;
-        --border2:    #5a4300;
-        --amber:      #e8a000;
-        --amber-dim:  #9a6a00;
-        --amber-lo:   #4a3200;
-        --text:       #cc9000;
-        --text-dim:   #886000;
-        --text-lo:    #4a3500;
-        --red:        #cc3333;
-        --red-bg:     #280808;
-        --orange:     #cc7700;
-        --orange-bg:  #221200;
-        --yellow:     #b88800;
-        --yellow-bg:  #1e1600;
-        --green:      #4a8a3a;
-        --green-bg:   #0a1608;
-        --green-dim:  #203a18;
-        --blue:       #3a6a9a;
-        --font-mono:  'IBM Plex Mono', 'Cascadia Code', 'Courier New', monospace;
-        --font-sans:  'IBM Plex Sans', sans-serif;
-      }
+        * { box-sizing: border-box; }
+        body {
+          margin: 0;
+          background: var(--bg);
+          color: var(--text);
+          font-family: Consolas, "Courier New", monospace;
+          font-size: 12px;
+        }
 
-      * { box-sizing: border-box; margin: 0; padding: 0; }
+        .header {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          padding: 10px 12px;
+          border-bottom: 1px solid var(--border);
+        }
 
-      body {
-        background: var(--bg);
-        color: var(--text);
-        font-family: var(--font-mono);
-        font-size: 11px;
-        line-height: 1.5;
-      }
+        .brand { font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+        .version { color: var(--muted); font-size: 10px; }
 
-      /* ── Header ─────────────────────────────── */
-      .header {
-        padding: 9px 12px 7px;
-        border-bottom: 1px solid var(--border);
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-      }
+        .tabs {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 1px;
+          background: var(--border);
+          border-bottom: 1px solid var(--border);
+        }
 
-      .logo {
-        font-size: 11px;
-        font-weight: 600;
-        letter-spacing: 0.18em;
-        color: var(--amber);
-        text-transform: uppercase;
-      }
+        .tab-btn {
+          border-bottom: 2px solid transparent;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          font-size: 10px;
+        }
 
-      .logo-dim { color: var(--amber-dim); font-weight: 300; }
+        .tab-btn.active {
+          background: var(--panel2);
+          border-bottom-color: var(--text);
+        }
 
-      .version {
-        font-size: 9px;
-        color: var(--text-lo);
-        letter-spacing: 0.05em;
-      }
+        .toolbar {
+          display: none;
+          grid-template-columns: 1fr;
+          gap: 1px;
+          background: var(--border);
+          border-bottom: 1px solid var(--border);
+        }
 
-      /* ── Toolbar ─────────────────────────────── */
-      .toolbar {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1px;
-        background: var(--border);
-        border-bottom: 1px solid var(--border);
-      }
+        .toolbar.active {
+          display: grid;
+        }
 
-      .tbtn {
-        background: var(--bg2);
-        color: var(--text-dim);
-        border: none;
-        padding: 6px 0;
-        cursor: pointer;
-        font-family: var(--font-mono);
-        font-size: 9px;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        font-weight: 500;
-        transition: background 0.1s, color 0.1s;
-      }
+        .utility-toolbar {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 1px;
+          background: var(--border);
+          border-bottom: 1px solid var(--border);
+        }
 
-      .tbtn:hover          { background: var(--bg3); color: var(--amber); }
-      .tbtn.primary        { color: var(--amber); }
-      .tbtn.primary:hover  { background: var(--amber-lo); }
+        button {
+          border: 0;
+          background: var(--panel);
+          color: var(--text);
+          padding: 8px;
+          cursor: pointer;
+          font: inherit;
+        }
 
-      /* ── Status ──────────────────────────────── */
-      .statusbar {
-        padding: 4px 12px;
-        font-size: 9px;
-        color: var(--text-lo);
-        letter-spacing: 0.06em;
-        border-bottom: 1px solid var(--border);
-        min-height: 21px;
-        display: flex;
-        align-items: center;
-        gap: 7px;
-      }
+        button:hover { background: var(--panel2); }
+        button:disabled { opacity: 0.45; cursor: not-allowed; }
 
-      .statusbar.scanning { color: var(--amber-dim); }
-      .statusbar.done     { color: var(--text-dim); }
-      .statusbar.error    { color: var(--red); }
+        .status {
+          min-height: 28px;
+          padding: 7px 12px;
+          color: var(--muted);
+          border-bottom: 1px solid var(--border);
+        }
 
-      .dot {
-        width: 5px; height: 5px;
-        border-radius: 50%;
-        background: var(--amber);
-        flex-shrink: 0;
-        animation: blink 1s ease-in-out infinite;
-      }
+        .summary {
+          display: none;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1px;
+          background: var(--border);
+          border-bottom: 1px solid var(--border);
+        }
 
-      @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
+        .summary.visible { display: grid; }
+        .sum { background: var(--panel); padding: 8px 4px; text-align: center; }
+        .sum strong { display: block; font-size: 16px; }
+        .sum span { color: var(--muted); font-size: 9px; text-transform: uppercase; }
+        .high { color: var(--high); }
+        .medium { color: var(--medium); }
+        .low { color: var(--low); }
 
-      /* ── Summary ─────────────────────────────── */
-      .summary {
-        display: none;
-        gap: 1px;
-        background: var(--border);
-        border-bottom: 1px solid var(--border);
-      }
+        .empty { padding: 32px 12px; color: var(--muted); text-align: center; }
+        .card { border-bottom: 1px solid var(--border); background: var(--panel); }
+        .head {
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          gap: 8px;
+          padding: 10px 12px;
+          cursor: pointer;
+        }
 
-      .summary.visible { display: flex; }
+        .sev {
+          border: 1px solid currentColor;
+          padding: 2px 5px;
+          font-size: 9px;
+          height: fit-content;
+        }
 
-      .sum-cell {
-        flex: 1;
-        background: var(--bg2);
-        padding: 5px 3px;
-        text-align: center;
-      }
+        .sev-CRITICAL, .sev-ERROR { color: var(--critical); }
+        .sev-HIGH { color: var(--high); }
+        .sev-WARNING, .sev-MEDIUM { color: var(--medium); }
+        .sev-LOW { color: var(--low); }
+        .sev-INFO { color: var(--info); }
 
-      .sum-n    { font-size: 13px; font-weight: 600; display: block; line-height: 1; }
-      .sum-l    { font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-lo); margin-top: 2px; display: block; }
-
-      .n-crit   { color: #cc3333; }
-      .n-high   { color: #cc7700; }
-      .n-med    { color: var(--yellow); }
-      .n-low    { color: var(--green); }
-
-      /* ── Empty state ─────────────────────────── */
-      .empty {
-        padding: 32px 12px;
-        text-align: center;
-        color: var(--text-lo);
-        font-size: 9px;
-        letter-spacing: 0.08em;
-        line-height: 2;
-      }
-
-      /* ── Card ────────────────────────────────── */
-      .card { border-bottom: 1px solid var(--border); }
-
-      .card-head {
-        padding: 7px 10px 7px 12px;
-        display: grid;
-        grid-template-columns: auto 1fr auto;
-        gap: 8px;
-        align-items: start;
-        cursor: pointer;
-        user-select: none;
-        transition: background 0.08s;
-      }
-
-      .card-head:hover { background: var(--bg2); }
-
-      .sev-tag {
-        font-size: 7px;
-        font-weight: 600;
-        letter-spacing: 0.1em;
-        padding: 2px 4px;
-        border: 1px solid;
-        text-transform: uppercase;
-        margin-top: 1px;
-        flex-shrink: 0;
-      }
-
-      .sev-CRITICAL { color:#cc3333; border-color:#cc3333; background:#280808; }
-      .sev-HIGH     { color:#cc7700; border-color:#cc7700; background:#221200; }
-      .sev-MEDIUM   { color:#b88800; border-color:#b88800; background:#1e1600; }
-      .sev-LOW      { color:#4a8a3a; border-color:#4a8a3a; background:#0a1608; }
-      .sev-INFO     { color:#3a6a9a; border-color:#3a6a9a; background:#080e18; }
-
-      .card-title {
-        font-size: 10px;
-        font-weight: 500;
-        color: var(--text);
-        line-height: 1.4;
-      }
-
-      .card-meta {
-        font-size: 9px;
-        color: var(--text-lo);
-        margin-top: 2px;
-      }
-
-      .file-link {
-        color: var(--amber-dim);
-        cursor: pointer;
-        text-decoration: none;
-      }
-
-      .file-link:hover { color: var(--amber); text-decoration: underline; }
-
-      .score-row {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        margin-top: 4px;
-      }
-
-      .score-track {
-        flex: 1;
-        height: 2px;
-        background: var(--border);
-      }
-
-      .score-fill { height: 100%; }
-
-      .score-num {
-        font-size: 8px;
-        color: var(--text-lo);
-        flex-shrink: 0;
-        width: 30px;
-        text-align: right;
-      }
-
-      .chevron {
-        font-size: 8px;
-        color: var(--text-lo);
-        transition: transform 0.15s;
-        padding-top: 2px;
-        font-family: var(--font-mono);
-      }
-
-      .chevron.open { transform: rotate(90deg); }
-
-      /* ── Card body ───────────────────────────── */
-      .card-body {
-        display: none;
-        background: var(--bg2);
-        border-top: 1px solid var(--border);
-      }
-
-      .card-body.open { display: block; }
-
-      .body-sec {
-        padding: 7px 12px;
-        border-bottom: 1px solid var(--border);
-      }
-
-      .body-sec:last-child { border-bottom: none; }
-
-      .sec-label {
-        font-size: 8px;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: var(--amber-dim);
-        font-weight: 600;
-        margin-bottom: 4px;
-      }
-
-      .body-text {
-        font-size: 10px;
-        color: var(--text-dim);
-        line-height: 1.55;
-        font-family: var(--font-sans);
-      }
-
-      .risks { list-style: none; }
-
-      .risks li {
-        font-size: 10px;
-        color: var(--text-dim);
-        padding: 1px 0 1px 12px;
-        position: relative;
-        font-family: var(--font-sans);
-      }
-
-      .risks li::before {
-        content: '>';
-        position: absolute;
-        left: 0;
-        color: var(--amber-dim);
-        font-family: var(--font-mono);
-      }
-
-      /* ── Action row ──────────────────────────── */
-      .act-row {
-        display: flex;
-        gap: 1px;
-        background: var(--border);
-      }
-
-      .abtn {
-        flex: 1;
-        background: var(--bg2);
-        color: var(--text-dim);
-        border: none;
-        padding: 6px 2px;
-        cursor: pointer;
-        font-family: var(--font-mono);
-        font-size: 8px;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        font-weight: 500;
-        transition: background 0.08s, color 0.08s;
-      }
-
-      .abtn:disabled          { opacity: 0.3; cursor: not-allowed; }
-      .abtn:hover             { background: var(--bg3); color: var(--amber); }
-      .abtn.goto              { color: var(--amber-dim); }
-      .abtn.goto:hover        { background: var(--amber-lo); color: var(--amber); }
-      .abtn.fix               { color: var(--green); }
-      .abtn.fix:hover         { background: var(--green-dim); color: #7acc6a; }
-      .abtn.apply             { color: var(--yellow); }
-      .abtn.apply:hover       { background: var(--yellow-bg); color: var(--amber); }
-      .abtn.learn             { color: #6aaad4; }
-      .abtn.learn:hover       { background: #080e18; color: #9dd4f4; }
-
-      /* ── Validation badge ────────────────────── */
-      .val-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        font-size: 7.5px;
-        letter-spacing: 0.08em;
-        padding: 2px 6px;
-        border-radius: 2px;
-        font-weight: 600;
-      }
-      .val-pass { background: var(--green-dim); color: #7acc6a; border: 1px solid var(--green); }
-      .val-fail { background: #280808; color: #cc5555; border: 1px solid var(--red); }
-      .val-warn { background: #221200; color: #cc9944; border: 1px solid var(--orange); }
-
-      /* ── Fix block ───────────────────────────── */
-      .fix-wrap { border-top: 1px solid var(--green-dim); }
-
-      .fix-head {
-        padding: 4px 12px;
-        font-size: 8px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        color: #5aaa4a;
-        background: var(--green-dim);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 6px;
-      }
-
-      .fix-code {
-        padding: 8px 12px;
-        font-family: var(--font-mono);
-        font-size: 9.5px;
-        color: #a8cc98;
-        white-space: pre-wrap;
-        word-break: break-all;
-        max-height: 150px;
-        overflow-y: auto;
-        background: #080e06;
-        line-height: 1.5;
-      }
-
-      .fix-desc {
-        padding: 5px 12px;
-        font-size: 10px;
-        color: var(--text-lo);
-        font-family: var(--font-sans);
-        border-top: 1px solid var(--border);
-        line-height: 1.5;
-      }
-
-      /* ── Learn panel ─────────────────────────── */
-      .learn-wrap {
-        border-top: 1px solid #0d2030;
-        background: #080e18;
-      }
-
-      .learn-head {
-        padding: 4px 12px;
-        font-size: 8px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        color: #6aaad4;
-        background: #0a1828;
-        border-bottom: 1px solid #0d2030;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-
-      .learn-section {
-        padding: 5px 12px;
-        border-bottom: 1px solid #0a1020;
-      }
-
-      .learn-section:last-child { border-bottom: none; }
-
-      .learn-label {
-        font-size: 7.5px;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: #3a6a9a;
-        font-weight: 600;
-        margin-bottom: 3px;
-      }
-
-      .learn-text {
-        font-size: 9.5px;
-        color: #5a8aaa;
-        line-height: 1.55;
-        font-family: var(--font-sans);
-      }
-
-      /* ── Spinner ─────────────────────────────── */
-      .spin {
-        display: inline-block;
-        width: 7px; height: 7px;
-        border: 1px solid var(--border2);
-        border-top-color: var(--amber);
-        border-radius: 50%;
-        animation: rot 0.6s linear infinite;
-        vertical-align: middle;
-        margin-right: 3px;
-      }
-
-      @keyframes rot { to { transform: rotate(360deg); } }
-
-      ::-webkit-scrollbar       { width: 3px; }
-      ::-webkit-scrollbar-track { background: var(--bg); }
-      ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
-    </style>
+        .title { font-weight: 700; line-height: 1.35; }
+        .meta { color: var(--muted); font-size: 10px; margin-top: 3px; }
+        .file { color: var(--text); text-decoration: underline; cursor: pointer; }
+        .chev { color: var(--muted); }
+        .body { display: none; background: var(--panel2); border-top: 1px solid var(--border); }
+        .body.open { display: block; }
+        .section { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+        .label { color: var(--muted); font-size: 9px; text-transform: uppercase; margin-bottom: 4px; }
+        .text { color: #d6b979; white-space: pre-wrap; line-height: 1.5; }
+        .kv { display: grid; grid-template-columns: 72px 1fr; gap: 4px 8px; color: #d6b979; }
+        .kv span:nth-child(odd) { color: var(--muted); }
+        .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); }
+        .export-actions {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 1px;
+          background: var(--border);
+          border-bottom: 1px solid var(--border);
+        }
+        .export-actions button {
+          background: var(--panel);
+          color: var(--text);
+          border: 0;
+          padding: 8px;
+          cursor: pointer;
+          font: inherit;
+        }
+        .export-actions button:hover { background: var(--panel2); }
+        .summary-card {
+          background: var(--panel);
+          border-bottom: 1px solid var(--border);
+          padding: 12px;
+        }
+        .summary-title {
+          color: var(--text);
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          margin-bottom: 10px;
+        }
+        .risk-score {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+        .score {
+          font-size: 24px;
+          font-weight: 700;
+          color: var(--text);
+        }
+        .level {
+          border: 1px solid currentColor;
+          padding: 4px 7px;
+          font-size: 9px;
+          font-weight: 700;
+        }
+        .level.low { color: var(--low); }
+        .level.medium { color: var(--medium); }
+        .level.high { color: var(--high); }
+        .level.critical { color: var(--critical); }
+        .summary-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 1px;
+          background: var(--border);
+          margin: 10px 0;
+        }
+        .summary-grid div {
+          background: var(--panel2);
+          padding: 8px 4px;
+          text-align: center;
+        }
+        .summary-grid strong {
+          display: block;
+          color: var(--muted);
+          font-size: 9px;
+          text-transform: uppercase;
+          margin-bottom: 4px;
+        }
+        .summary-section { margin-top: 10px; }
+        .summary-section h3 {
+          color: var(--muted);
+          font-size: 9px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          margin: 0 0 5px;
+        }
+        .summary-list {
+          list-style: none;
+          margin: 0;
+          padding: 0;
+          color: #d6b979;
+        }
+        .summary-list li {
+          border-top: 1px solid var(--border);
+          padding: 5px 0;
+          line-height: 1.45;
+        }
+        .summary-muted { color: var(--muted); }
+      </style>
     </head>
     <body>
-
       <div class="header">
-        <div class="logo">Auto<span class="logo-dim">Shield</span></div>
-        <div class="version">v1.0.0</div>
+        <div class="brand">AutoShield</div>
+        <div class="version">LangGraph</div>
       </div>
-
-      <div class="toolbar">
-        <button class="tbtn primary" onclick="runScan()">[S]  Scan</button>
-        <button class="tbtn" onclick="clearUI()">[C]  Clear</button>
+      <div class="tabs">
+        <button id="securityTab" class="tab-btn active" onclick="switchTab('security')">Security</button>
+        <button id="complianceTab" class="tab-btn" onclick="switchTab('compliance')">Compliance</button>
       </div>
-
-      <div id="sb" class="statusbar">Ready</div>
-
+      <div id="securityToolbar" class="toolbar active">
+        <button onclick="runScan()">Scan Project</button>
+      </div>
+      <div id="complianceToolbar" class="toolbar">
+        <button onclick="runMediaCompliance()">Media Compliance</button>
+      </div>
+      <div class="utility-toolbar">
+        <button onclick="clearUI()">Clear</button>
+      </div>
+      <div id="status" class="status">Ready</div>
       <div id="summary" class="summary">
-        <div class="sum-cell"><span class="sum-n n-crit" id="s-crit">0</span><span class="sum-l">Crit</span></div>
-        <div class="sum-cell"><span class="sum-n n-high" id="s-high">0</span><span class="sum-l">High</span></div>
-        <div class="sum-cell"><span class="sum-n n-med"  id="s-med">0</span><span class="sum-l">Med</span></div>
-        <div class="sum-cell"><span class="sum-n n-low"  id="s-low">0</span><span class="sum-l">Low</span></div>
+        <div class="sum"><strong id="s-high" class="high">0</strong><span>High</span></div>
+        <div class="sum"><strong id="s-medium" class="medium">0</strong><span>Medium</span></div>
+        <div class="sum"><strong id="s-low" class="low">0</strong><span>Low</span></div>
       </div>
-
-      <div id="out"></div>
+      <div class="export-actions">
+        <button id="exportJson">Export JSON</button>
+        <button id="exportHtml">Export HTML</button>
+      </div>
+      <div id="out" class="empty">Open a folder and run Scan Project.</div>
 
       <script>
         const vscode = acquireVsCodeApi();
         let currentResults = [];
+        let activeTab = 'security';
+        const tabReports = {
+          security: null,
+          compliance: null,
+        };
 
+        function switchTab(tab) {
+          activeTab = tab;
+          document.getElementById('securityTab')?.classList.toggle('active', tab === 'security');
+          document.getElementById('complianceTab')?.classList.toggle('active', tab === 'compliance');
+          document.getElementById('securityToolbar')?.classList.toggle('active', tab === 'security');
+          document.getElementById('complianceToolbar')?.classList.toggle('active', tab === 'compliance');
 
-        function runScan() {
-          setStatus('Scanning workspace...', 'scanning', true);
-          vscode.postMessage({ type: 'runScan' });
-        }
-
-        function clearUI() {
-          document.getElementById('out').innerHTML = '';
-          document.getElementById('summary').classList.remove('visible');
-          setStatus('Ready', '');
-          currentResults = [];
-        }
-
-        function setStatus(text, cls, pulse) {
-          const el = document.getElementById('sb');
-          el.className = 'statusbar' + (cls ? ' ' + cls : '');
-          el.innerHTML = (pulse ? '<span class="dot"></span>' : '') + text;
-        }
-
-        function jumpToLine(fp, line) {
-          vscode.postMessage({ type: 'jumpToLine', filePath: fp, line });
-        }
-
-        function generateFix(i) {
-          const r = currentResults[i];
-          if (!r) return;
-          vscode.postMessage({
-            type: 'generateFix',
-            findingIndex: i,
-            codeSnippet: r.code_snippet || r.message || '',
-            vulnType: r.vuln_type || '',
-            cweId: r.cwe_id || 'CWE-Unknown',
-          });
-        }
-
-        function applyFix(i) {
-          const r = currentResults[i];
-          if (!r || !r._fixCode) return;
-          // Pass validationPassed so the extension command can reject unvalidated patches
-          vscode.postMessage({
-            type: 'applyFix',
-            filePath: r.file_path,
-            line: r.line,
-            originalCode: r.code_snippet || '',
-            fixCode: r._fixCode,
-            validationPassed: r._validationPassed === true,
-          });
-        }
-
-        function learnAboutIssue(i) {
-          const r = currentResults[i];
-          if (!r) return;
-          vscode.postMessage({
-            type: 'learnAboutIssue',
-            findingIndex: i,
-            vulnType: r.vuln_type || '',
-            cweId: r.cwe_id || '',
-            codeSnippet: r.code_snippet || r.message || '',
-          });
-        }
-
-        function toggle(i) {
-          const body = document.getElementById('b-' + i);
-          const chev = document.getElementById('c-' + i);
-          if (!body) return;
-          const open = body.classList.toggle('open');
-          chev.classList.toggle('open', open);
-        }
-
-        function scoreColor(s) {
-          if (s >= 85) return '#cc3333';
-          if (s >= 65) return '#cc7700';
-          if (s >= 40) return '#b88800';
-          return '#4a8a3a';
-        }
-
-        function esc(s) {
-          return String(s)
-            .replace(/&/g,'&amp;')
-            .replace(/</g,'&lt;')
-            .replace(/>/g,'&gt;');
-        }
-
-        function fixBlock(i, code, desc, validated) {
-          if (!code && !desc) return '';
-          const badge = validated === true
-            ? \`<span class="val-badge val-pass">&#10003; Validated</span>\`
-            : validated === false
-            ? \`<span class="val-badge val-fail">&#9888; Unverified</span>\`
-            : '';
-          return \`<div class="fix-wrap" id="fix-wrap-\${i}">
-            <div class="fix-head">
-              <span>Patch Preview</span>
-              <span style="display:flex;align-items:center;gap:6px">
-                \${badge}
-                \${code ? \`<button class="abtn apply" style="flex:none;padding:2px 8px" id="apply-btn-\${i}" onclick="applyFix(\${i})">Apply Fix</button>\` : ''}
-              </span>
-            </div>
-            \${code ? \`<div class="fix-code">\${esc(code)}</div>\` : ''}
-            \${desc  ? \`<div class="fix-desc">\${esc(desc)}</div>\` : ''}
-          </div>\`;
-        }
-
-        function learnBlock(i, d) {
-          if (!d) return '';
-          const sections = [
-            { label: 'What is it?',    key: 'what_is_it' },
-            { label: 'How it works',   key: 'how_it_works' },
-            { label: 'Real-world',     key: 'real_world' },
-            { label: 'Why dangerous',  key: 'why_dangerous' },
-            { label: 'How to fix',     key: 'how_to_fix' },
-            { label: 'CWE / OWASP',   key: 'cwe_owasp' },
-          ];
-          const html = sections
-            .filter(s => d[s.key])
-            .map(s => \`<div class="learn-section">
-              <div class="learn-label">\${s.label}</div>
-              <div class="learn-text">\${esc(d[s.key])}</div>
-            </div>\`)
-            .join('');
-          const links = (d.further_reading || []).slice(0, 3);
-          const linksHtml = links.length
-            ? \`<div class="learn-section"><div class="learn-label">Further reading</div>\${
-                links.map(u => \`<div class="learn-text" style="margin-bottom:2px">&#8594; \${esc(u)}</div>\`).join('')
-              }</div>\`
-            : '';
-          return \`<div class="learn-wrap" id="learn-wrap-\${i}">
-            <div class="learn-head">
-              <span>&#128218; About: \${esc(d.vulnerability_type || '')}</span>
-              <button class="abtn" style="flex:none;padding:1px 6px;font-size:7px" onclick="closePanelEl('learn-wrap-\${i}')">&#10005;</button>
-            </div>
-            \${html}\${linksHtml}
-          </div>\`;
-        }
-
-        function closePanelEl(id) {
-          const el = document.getElementById(id);
-          if (el) el.remove();
-        }
-
-        function updateSummary(results) {
-          const c = {CRITICAL:0, HIGH:0, MEDIUM:0, LOW:0};
-          results.forEach(r => {
-            const k = (r.risk_category||'MEDIUM').toUpperCase();
-            if (c[k] !== undefined) c[k]++;
-          });
-          document.getElementById('s-crit').innerText = c.CRITICAL;
-          document.getElementById('s-high').innerText = c.HIGH;
-          document.getElementById('s-med').innerText  = c.MEDIUM;
-          document.getElementById('s-low').innerText  = c.LOW;
-          document.getElementById('summary').classList.add('visible');
-        }
-
-        function render(results) {
-          const out = document.getElementById('out');
-          out.innerHTML = '';
-
-          if (!results || results.length === 0) {
-            out.innerHTML = '<div class="empty">// No issues detected</div>';
+          const stored = tabReports[tab];
+          if (stored) {
+            currentResults = stored.results || [];
+            render(currentResults, stored.summary || {}, stored.report || {});
             return;
           }
 
-          updateSummary(results);
+          currentResults = [];
+          document.getElementById('summary').classList.remove('visible');
+          const text = tab === 'security'
+            ? 'Open a folder and run Scan Project.'
+            : 'Open a folder and run Media Compliance.';
+          const out = document.getElementById('out');
+          out.className = 'empty';
+          out.innerHTML = text;
+        }
 
-          results.forEach((r, i) => {
-            const cat   = (r.risk_category || 'MEDIUM').toUpperCase();
-            const score = r.risk_score || 0;
-            const fp    = r.file_path || 'unknown';
-            const fn    = fp.split(/[\\\/]/).pop();
-            const cwe   = r.cwe_id ? ' [' + r.cwe_id + ']' : '';
-            const hasF  = !!(r.fix_code || r.recommended_fix);
-            const risks = r.key_risks || [];
-            const rsn   = r.reasoning || '';
+        function runScan() {
+          switchTab('security');
+          setStatus('Scanning workspace...');
+          vscode.postMessage({ type: 'runScan' });
+        }
+
+        function runMediaCompliance() {
+          switchTab('compliance');
+          setStatus('Scanning media compliance...');
+          vscode.postMessage({ type: 'runMediaCompliance' });
+        }
+
+        function clearUI() {
+          currentResults = [];
+          tabReports.security = null;
+          tabReports.compliance = null;
+          document.getElementById('out').className = 'empty';
+          document.getElementById('out').innerHTML = activeTab === 'security'
+            ? 'Open a folder and run Scan Project.'
+            : 'Open a folder and run Media Compliance.';
+          document.getElementById('summary').classList.remove('visible');
+          setStatus('Ready');
+          vscode.postMessage({ type: 'clearResults' });
+        }
+
+        function exportReport(format) {
+          vscode.postMessage({
+            command: 'exportReport',
+            format,
+          });
+        }
+
+        function setStatus(text) {
+          document.getElementById('status').textContent = text;
+        }
+
+        function esc(value) {
+          return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+        }
+
+        function severityClass(value) {
+          return String(value || 'INFO').toUpperCase().replace(/[^A-Z]/g, '');
+        }
+
+        function confidence(result) {
+          return result.validation && result.validation.confidence
+            ? result.validation.confidence
+            : 'UNKNOWN';
+        }
+
+        function updateSummary(results, summary) {
+          const counts = {
+            high: summary?.high ?? 0,
+            medium: summary?.medium ?? 0,
+            low: summary?.low ?? 0,
+          };
+
+          if (!summary || Object.keys(summary).length === 0) {
+            results.forEach((result) => {
+              const c = String(confidence(result)).toLowerCase();
+              if (counts[c] !== undefined) counts[c]++;
+            });
+          }
+
+          document.getElementById('s-high').textContent = counts.high;
+          document.getElementById('s-medium').textContent = counts.medium;
+          document.getElementById('s-low').textContent = counts.low;
+          document.getElementById('summary').classList.add('visible');
+        }
+
+        function riskLevelClass(level) {
+          return String(level || 'unknown').toLowerCase().replace(/[^a-z]/g, '');
+        }
+
+        function renderObjectList(values, emptyText) {
+          const entries = Object.entries(values || {});
+          if (!entries.length) return '<li class="summary-muted">' + esc(emptyText || 'No data') + '</li>';
+          return entries.map(([name, count]) => '<li>' + esc(name) + ': ' + esc(count) + '</li>').join('');
+        }
+
+        function renderTopIssues(issues) {
+          if (!issues || issues.length === 0) return '<li class="summary-muted">No top issues reported</li>';
+          return issues.map((issue, index) => {
+            const location = issue.file ? ' - ' + esc(issue.file) + ':' + esc(issue.line || 1) : '';
+            return '<li>' + esc(index + 1) + '. <strong>' + esc(issue.category || 'Security Issue') + '</strong> - ' +
+              esc(issue.severity || '') + location + '</li>';
+          }).join('');
+        }
+
+        function renderRemediationPlan(plan) {
+          if (!plan || plan.length === 0) return '<li class="summary-muted">No remediation plan available</li>';
+          return plan.map((item) => '<li><strong>' + esc(item.priority || '') + '</strong> - ' +
+            esc(item.category || 'Security Issue') + '<br><span class="summary-muted">' +
+            esc(item.action || '') + '</span></li>').join('');
+        }
+
+        function renderExecutiveSummary(report, results, summary) {
+          const confidence = report?.confidence_summary || summary || {};
+          const grouped = report?.grouped_summary || {};
+          const bySource = grouped.by_source || {};
+          const byCategory = grouped.by_category || {};
+          const score = report?.overall_risk_score ?? 'N/A';
+          const level = report?.overall_risk_level || 'UNKNOWN';
+          const total = report?.total_findings ?? (results ? results.length : 0);
+
+          return '<section class="summary-card">' +
+            '<div class="summary-title">AutoShield Risk Summary</div>' +
+            '<div class="risk-score"><div class="score">' + esc(score) + '/100</div>' +
+            '<div class="level ' + esc(riskLevelClass(level)) + '">' + esc(level) + '</div></div>' +
+            '<div class="summary-grid">' +
+              '<div><strong>Total</strong>' + esc(total) + '</div>' +
+              '<div><strong>High</strong>' + esc(confidence.high || 0) + '</div>' +
+              '<div><strong>Medium</strong>' + esc(confidence.medium || 0) + '</div>' +
+              '<div><strong>Low</strong>' + esc(confidence.low || 0) + '</div>' +
+            '</div>' +
+            '<div class="summary-section"><h3>Findings by Source</h3><ul class="summary-list">' +
+              renderObjectList(bySource, 'No source grouping') + '</ul></div>' +
+            '<div class="summary-section"><h3>Findings by Category</h3><ul class="summary-list">' +
+              renderObjectList(byCategory, 'No category grouping') + '</ul></div>' +
+            '<div class="summary-section"><h3>Top Issues</h3><ul class="summary-list">' +
+              renderTopIssues(report?.top_issues || []) + '</ul></div>' +
+            '<div class="summary-section"><h3>Remediation Plan</h3><ul class="summary-list">' +
+              renderRemediationPlan(report?.remediation_plan || []) + '</ul></div>' +
+          '</section>';
+        }
+
+        function toggle(index) {
+          const body = document.getElementById('body-' + index);
+          if (body) body.classList.toggle('open');
+        }
+
+        function jumpToLine(filePath, line) {
+          vscode.postMessage({ type: 'jumpToLine', filePath, line });
+        }
+
+        function render(results, summary, report) {
+          const out = document.getElementById('out');
+          out.className = '';
+          out.innerHTML = '';
+
+          if (!results || results.length === 0) {
+            out.className = 'empty';
+            out.innerHTML = 'No issues detected.';
+            document.getElementById('summary').classList.remove('visible');
+            return;
+          }
+
+          updateSummary(results, summary);
+          out.innerHTML = renderExecutiveSummary(report || {}, results, summary || {});
+
+          results.forEach((result, index) => {
+            const filePath = result.file_path || result.file || 'unknown';
+            const fileName = filePath.split(/[\\\\/]/).pop();
+            const line = result.line || 1;
+            const severity = String(result.severity || 'INFO').toUpperCase();
+            const category = result.category || 'Security Issue';
+            const cwe = result.cwe || result.cwe_id || 'CWE-Unknown';
+            const owasp = result.owasp || 'OWASP-Unknown';
+            const explanation = result.explanation || result.message || '';
+            const code = result.code_snippet || '';
 
             const card = document.createElement('div');
             card.className = 'card';
             card.innerHTML = \`
-              <div class="card-head" onclick="toggle(\${i})">
-                <span class="sev-tag sev-\${cat}">\${cat}</span>
+              <div class="head" onclick="toggle(\${index})">
+                <div class="sev sev-\${severityClass(severity)}">\${esc(severity)}</div>
                 <div>
-                  <div class="card-title">\${esc(r.vuln_type || r.cwe_id || 'Unknown Issue')}\${cwe}</div>
-                  <div class="card-meta">
-                    <span class="file-link" onclick="event.stopPropagation();jumpToLine('\${fp}',\${r.line||1})">\${fn}</span>
-                    &nbsp;:&nbsp;\${r.line||0}&nbsp;&nbsp;\${r.tool ? '[ '+r.tool+' ]' : ''}
-                  </div>
-                  <div class="score-row">
-                    <div class="score-track">
-                      <div class="score-fill" style="width:\${score}%;background:\${scoreColor(score)}"></div>
-                    </div>
-                    <span class="score-num">\${score}/100</span>
+                  <div class="title">\${esc(category)}</div>
+                  <div class="meta">
+                    <span class="file" onclick="event.stopPropagation(); jumpToLine('\${esc(filePath)}', \${line})">\${esc(fileName)}</span>:\${line}
+                    &nbsp; \${esc(cwe)}
+                    &nbsp; \${esc(confidence(result))}
                   </div>
                 </div>
-                <span class="chevron" id="c-\${i}">&gt;</span>
+                <div class="chev">&gt;</div>
               </div>
-
-              <div class="card-body" id="b-\${i}">
-                \${rsn ? \`<div class="body-sec"><div class="sec-label">LLM Reasoning</div><div class="body-text">\${esc(rsn)}</div></div>\` : ''}
-                \${risks.length ? \`<div class="body-sec"><div class="sec-label">Key Risks</div><ul class="risks">\${risks.map(k=>\`<li>\${esc(k)}</li>\`).join('')}</ul></div>\` : ''}
-                <div class="act-row">
-                  <button class="abtn goto" onclick="jumpToLine('\${fp}',\${r.line||1})">Go to line \${r.line||1}</button>
-                  <button class="abtn fix" id="fb-\${i}" onclick="generateFix(\${i})">Get Fix</button>
-                  <button class="abtn learn" id="lb-\${i}" onclick="learnAboutIssue(\${i})">Learn</button>
+              <div class="body" id="body-\${index}">
+                <div class="section">
+                  <div class="label">Details</div>
+                  <div class="kv">
+                    <span>Severity</span><span>\${esc(severity)}</span>
+                    <span>Confidence</span><span>\${esc(confidence(result))}</span>
+                    <span>CWE</span><span>\${esc(cwe)}</span>
+                    <span>OWASP</span><span>\${esc(owasp)}</span>
+                    <span>Tool</span><span>\${esc(result.tool || 'unknown')}</span>
+                    <span>Location</span><span>\${esc(filePath)}:\${line}</span>
+                  </div>
                 </div>
-                \${hasF ? fixBlock(i, r.fix_code||'', r.recommended_fix||'', null) : ''}
-                <div id="fa-\${i}"></div>
-                <div id="la-\${i}"></div>
+                \${code ? \`<div class="section"><div class="label">Evidence</div><div class="text">\${esc(code)}</div></div>\` : ''}
+                \${explanation ? \`<div class="section"><div class="label">Explanation</div><div class="text">\${esc(explanation)}</div></div>\` : ''}
+                <div class="actions">
+                  <button onclick="jumpToLine('\${esc(filePath)}', \${line})">Go to Line</button>
+                  <button disabled>Get Fix / Apply Fix coming soon</button>
+                </div>
               </div>
             \`;
+
             out.appendChild(card);
           });
         }
 
-        window.addEventListener('message', ev => {
-          const msg = ev.data;
+        window.addEventListener('message', (event) => {
+          const msg = event.data;
 
           if (msg.type === 'scanStarted') {
-            setStatus('Scanning workspace...', 'scanning', true);
-            document.getElementById('out').innerHTML = '';
-            document.getElementById('summary').classList.remove('visible');
+            switchTab('security');
             currentResults = [];
+            tabReports.security = null;
+            document.getElementById('out').className = 'empty';
+            document.getElementById('out').innerHTML = 'Scanning...';
+            document.getElementById('summary').classList.remove('visible');
+            setStatus('Scanning workspace...');
+          }
+
+          if (msg.type === 'mediaComplianceStarted') {
+            switchTab('compliance');
+            currentResults = [];
+            tabReports.compliance = null;
+            document.getElementById('out').className = 'empty';
+            document.getElementById('out').innerHTML = 'Scanning media compliance...';
+            document.getElementById('summary').classList.remove('visible');
+            setStatus('Scanning media compliance...');
           }
 
           if (msg.type === 'scanResults') {
             currentResults = msg.results || [];
-            const n = msg.count || 0;
-            setStatus('Scan complete  —  ' + n + ' finding' + (n!==1?'s':''), 'done');
-            render(currentResults);
+            tabReports[activeTab] = {
+              results: currentResults,
+              summary: msg.summary || {},
+              report: msg.report || {},
+            };
+            setStatus('Scan complete - ' + currentResults.length + ' finding' + (currentResults.length === 1 ? '' : 's'));
+            render(currentResults, msg.summary || {}, msg.report || {});
           }
-
-          if (msg.type === 'clear') { clearUI(); }
 
           if (msg.type === 'scanError') {
-            setStatus('Error: ' + msg.error, 'error');
+            setStatus('Error: ' + msg.error);
           }
 
-          // ── Fix pipeline messages ─────────────────────────────────────
-          if (msg.type === 'fixGenerating') {
-            const btn = document.getElementById('fb-' + msg.findingIndex);
-            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Generating'; }
-          }
-
-          if (msg.type === 'fixGenerated') {
-            const i = msg.findingIndex;
-            const d = msg.fixData || {};
-            const btn = document.getElementById('fb-' + i);
-            if (btn) { btn.disabled = false; btn.innerText = 'Regenerate'; }
-
-            // d.success = true → validated patch; false → unverified
-            const validated = d.success === true ? true : (d.success === false ? false : null);
-            // New pipeline returns fixed_code; legacy returns fix_code
-            const code = d.fixed_code || d.fix_code || '';
-
-            if (currentResults[i]) {
-              currentResults[i]._fixCode = code;
-              // Store whether the backend declared this patch as validated
-              // so applyFix() can forward it to the extension command
-              currentResults[i]._validationPassed = (validated === true);
-            }
-
-            const area = document.getElementById('fa-' + i);
-            if (area) area.innerHTML = fixBlock(i, code, d.explanation || d.message || '', validated);
-
-            const body = document.getElementById('b-' + i);
-            const chev = document.getElementById('c-' + i);
-            if (body && !body.classList.contains('open')) {
-              body.classList.add('open');
-              if (chev) chev.classList.add('open');
-            }
-          }
-
-          if (msg.type === 'fixError') {
-            const i = msg.findingIndex;
-            const btn = document.getElementById('fb-' + i);
-            if (btn) { btn.disabled = false; btn.innerText = 'Retry'; }
-            const area = document.getElementById('fa-' + i);
-            if (area) area.innerHTML = '<div style="padding:5px 12px;font-size:9px;color:#cc3333;letter-spacing:0.04em">Error: ' + esc(msg.error) + '</div>';
-          }
-
-          // ── Learn About This Issue messages ───────────────────────────
-          if (msg.type === 'learnLoading') {
-            const btn = document.getElementById('lb-' + msg.findingIndex);
-            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Loading'; }
-          }
-
-          if (msg.type === 'learnLoaded') {
-            const i = msg.findingIndex;
-            const btn = document.getElementById('lb-' + i);
-            if (btn) { btn.disabled = false; btn.innerText = 'Learn'; }
-            const area = document.getElementById('la-' + i);
-            if (area) area.innerHTML = learnBlock(i, msg.explainData);
-            const body = document.getElementById('b-' + i);
-            const chev = document.getElementById('c-' + i);
-            if (body && !body.classList.contains('open')) {
-              body.classList.add('open');
-              if (chev) chev.classList.add('open');
-            }
-          }
-
-          if (msg.type === 'learnError') {
-            const i = msg.findingIndex;
-            const btn = document.getElementById('lb-' + i);
-            if (btn) { btn.disabled = false; btn.innerText = 'Learn'; }
-            const area = document.getElementById('la-' + i);
-            if (area) area.innerHTML = '<div style="padding:5px 12px;font-size:9px;color:#cc3333">Error: ' + esc(msg.error) + '</div>';
+          if (msg.type === 'clear') {
+            currentResults = [];
+            tabReports.security = null;
+            tabReports.compliance = null;
+            document.getElementById('out').className = 'empty';
+            document.getElementById('out').innerHTML = activeTab === 'security'
+              ? 'Open a folder and run Scan Project.'
+              : 'Open a folder and run Media Compliance.';
+            document.getElementById('summary').classList.remove('visible');
+            setStatus('Ready');
           }
         });
+
+        document.getElementById('exportJson')?.addEventListener('click', () => exportReport('json'));
+        document.getElementById('exportHtml')?.addEventListener('click', () => exportReport('html'));
       </script>
     </body>
     </html>
